@@ -9,11 +9,12 @@ library(readr)
 library(janitor)
 library(ggplot2)
 
-# 1. READ & CLEAN FANTASYPROS CSV EXPORTS (Safe Column Matching)
+# ==========================================
+# 1. READ & CLEAN FANTASYPROS CSV EXPORTS
+# ==========================================
 fp_raw <- read_csv("fp_flex_proj.csv", show_col_types = FALSE) %>% clean_names()
 fp_raw_qb <- read_csv("fp_qb_proj.csv", show_col_types = FALSE) %>% clean_names()
 
-# Helper to safely grab numeric columns regardless of exact FP naming variations
 safe_num <- function(df, ...) {
   cols <- c(...)
   found <- intersect(cols, names(df))
@@ -61,7 +62,9 @@ fp_clean_qb <- fp_raw_qb %>%
 
 fp_csv_final <- bind_rows(fp_clean_flex, fp_clean_qb)
 
+# ==========================================
 # 2. SCRAPE NON-FP DATA SOURCES
+# ==========================================
 scraped_data <- scrape_data(
   src = c("CBS", "ESPN", "NumberFire", "FFToday", "FantasySharks", "NFL", "Yahoo"),
   pos = c("QB", "RB", "WR", "TE"),
@@ -91,7 +94,9 @@ projections_with_source_stats <- raw_stats_all %>%
   select(player, pos, team, pass_yds, pass_tds, pass_int, rush_yds, rush_tds, fumbles_lost, data_src, rec, rec_yds, rec_tds) %>% 
   distinct()
 
+# ==========================================
 # 3. FETCH SLEEPER DATA
+# ==========================================
 url_proj <- "https://api.sleeper.app/projections/nfl/2026?season_type=regular&position[]=QB&position[]=RB&position[]=WR&position[]=TE&order_by=ppr"
 raw_proj <- fromJSON(url_proj, simplifyDataFrame = FALSE)
 
@@ -125,7 +130,9 @@ full_sleeper_df <- sleeper_projections %>%
   mutate(fumbles_lost = NA_real_, data_src = "sleeper") %>%
   select(player, pos, team, pass_yds, pass_tds, pass_int, rush_yds, rush_tds, fumbles_lost, data_src, rec, rec_yds, rec_tds)
 
+# ==========================================
 # 4. MASTER BIND & CLEAN
+# ==========================================
 combined_projections <- bind_rows(projections_with_source_stats, full_sleeper_df, fp_csv_final)
 stat_cols <- c("pass_yds", "pass_tds", "pass_int", "rush_yds", "rush_tds", "rec", "rec_yds", "rec_tds")
 
@@ -144,7 +151,9 @@ combined_projections_clean <- combined_projections %>%
     player = player %>% str_remove_all(" (Jr\\.|Sr\\.|II|III|IV)$") %>% str_trim()
   )
 
+# ==========================================
 # 5. CREATE WEIGHTED PROJECTIONS MODEL
+# ==========================================
 source_weights <- tibble(
   data_src = c("FantasyPros", "FantasySharks", "sleeper", "FFToday", "CBS"),
   weight   = c(1.00, 0.85, 0.85, 0.75, 0.65)
@@ -166,7 +175,9 @@ weighted_projections <- combined_projections_clean %>%
   ) %>%
   mutate(across(all_of(stat_cols_weighted), ~ ifelse(is.nan(.x), 0, .x)))
 
-# 6. DEFINE BASELINE LEAGUE SCORING & COMPUTE MANUAL TIER CUTOFFS
+# ==========================================
+# 6. LEAGUE SCORING, POSITIONAL VOR, & TIERS
+# ==========================================
 league_rules <- list(
   pass_yds = 0.04, pass_tds = 4.00, pass_int = -2.00, 
   rush_yds = 0.10, rush_tds = 6.00, 
@@ -188,15 +199,40 @@ calc_league_pts <- function(df, rules) {
     )
 }
 
-# Compute points, assign position ranks, and apply manual tiers
+# 1. Calculate projected points & rank within position
 weighted_projections <- calc_league_pts(weighted_projections, league_rules) %>%
   rename(weighted_pts = total_pts) %>%
   filter(pos %in% c("QB", "RB", "WR", "TE")) %>%
   group_by(pos) %>%
   arrange(desc(weighted_pts)) %>%
   mutate(pos_rank = row_number()) %>%
-  ungroup() %>%
+  ungroup()
+
+# 2. Define target replacement ranks (QB16, RB28, WR32, TE12)
+replacement_targets <- tibble(
+  pos = c("QB", "RB", "WR", "TE"),
+  rep_rank = c(16, 28, 32, 12)
+)
+
+# 3. Extract exact baseline points per position (with tail fallback if pool is small)
+baselines <- weighted_projections %>%
+  inner_join(replacement_targets, by = "pos") %>%
+  group_by(pos) %>%
+  summarise(
+    baseline_pts = if_else(
+      max(pos_rank) >= first(rep_rank),
+      weighted_pts[pos_rank == first(rep_rank)][1],
+      tail(weighted_pts, 1)
+    ),
+    .groups = "drop"
+  )
+
+# 4. Join baseline, compute VOR, map manual tiers, and calculate model ADP
+weighted_projections <- weighted_projections %>%
+  left_join(baselines, by = "pos") %>%
   mutate(
+    baseline_pts = coalesce(baseline_pts, 0),
+    vor = weighted_pts - baseline_pts,
     tier = case_when(
       pos == "WR" ~ case_when(
         pos_rank <= 2  ~ 1, 
@@ -207,7 +243,7 @@ weighted_projections <- calc_league_pts(weighted_projections, league_rules) %>%
         pos_rank <= 27 ~ 6,
         pos_rank <= 36 ~ 7,
         pos_rank <= 48 ~ 8,
-        TRUE          ~ 9
+        TRUE           ~ 9
       ),
       pos == "RB" ~ case_when(
         pos_rank <= 2  ~ 1,
@@ -219,7 +255,7 @@ weighted_projections <- calc_league_pts(weighted_projections, league_rules) %>%
         pos_rank <= 30 ~ 7,
         pos_rank <= 36 ~ 8,
         pos_rank <= 44 ~ 9,
-        TRUE          ~ 10
+        TRUE           ~ 10
       ),
       pos == "QB" ~ case_when(
         pos_rank <= 1  ~ 1,
@@ -227,7 +263,7 @@ weighted_projections <- calc_league_pts(weighted_projections, league_rules) %>%
         pos_rank <= 12 ~ 3,
         pos_rank <= 16 ~ 4,
         pos_rank <= 19 ~ 5,
-        TRUE          ~ 6
+        TRUE           ~ 6
       ),
       pos == "TE" ~ case_when(
         pos_rank <= 1  ~ 1,
@@ -235,11 +271,12 @@ weighted_projections <- calc_league_pts(weighted_projections, league_rules) %>%
         pos_rank <= 4  ~ 3,
         pos_rank <= 8  ~ 4,
         pos_rank <= 15 ~ 5,
-        TRUE          ~ 6
+        TRUE           ~ 6
       )
     ),
     model_adp = rank(-weighted_pts, ties.method = "min")
-  )
+  ) %>%
+  select(-baseline_pts)
 
 # ==========================================
 # VISUALIZE POSITION DROP-OFF CURVES (OPTIONAL)
@@ -269,5 +306,6 @@ save(
   file = "app_data.RData"
 )
 
-print("Manual tier mapping applied and saved successfully!")
+print("Manual tier mapping & VOR calculation completed successfully!")
+print("Baseline thresholds applied: QB16, RB28, WR32, TE12")
 print(table(weighted_projections$pos, weighted_projections$tier))

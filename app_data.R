@@ -7,6 +7,7 @@ library(jsonlite)
 library(tidyr)
 library(readr)
 library(janitor)
+library(ggplot2)
 
 # 1. READ & CLEAN FANTASYPROS CSV EXPORTS (Safe Column Matching)
 fp_raw <- read_csv("fp_flex_proj.csv", show_col_types = FALSE) %>% clean_names()
@@ -187,47 +188,20 @@ calc_league_pts <- function(df, rules) {
     )
 }
 
-# ==========================================
-# VISUALIZE POSITION DROP-OFF CURVES & MANUALLY SET TIERS
-# ==========================================
-
-# 1. Generate and print individual plots for each position to inspect cliffs visually
-positions_to_plot <- c("QB", "RB", "WR", "TE")
-
-plot_list <- lapply(positions_to_plot, function(p) {
-  weighted_projections %>%
-    filter(pos == p) %>%
-    ggplot(aes(x = pos_rank, y = weighted_pts, label = player)) +
-    geom_point(size = 2, color = "steelblue") +
-    geom_line(color = "steelblue", alpha = 0.5) +
-    geom_text(vjust = -0.8, size = 3, check_overlap = TRUE) +
-    theme_minimal() +
-    labs(
-      title = paste("Value Cliffs:", p, "Rank vs Projected Points"),
-      x = "Position Rank",
-      y = "Weighted Fantasy Points"
-    )
-})
-
-# Display the plots in your viewer (run these one at a time or loop through them)
-# print(plot_list[[1]]) # QB
-# print(plot_list[[2]]) # RB
-# print(plot_list[[3]]) # WR
-# print(plot_list[[4]]) # TE
-
-# ==========================================
-# 2. UPDATE YOUR SECTION 6 TIER ASSIGNMENT MAPPING
-# ==========================================
-# Once you look at the plots, modify the position rank boundaries below 
-# to match your exact manual cutoffs where the value cliffs happen.
-
-weighted_projections <- weighted_projections %>%
+# Compute points, assign position ranks, and apply manual tiers
+weighted_projections <- calc_league_pts(weighted_projections, league_rules) %>%
+  rename(weighted_pts = total_pts) %>%
+  filter(pos %in% c("QB", "RB", "WR", "TE")) %>%
+  group_by(pos) %>%
+  arrange(desc(weighted_pts)) %>%
+  mutate(pos_rank = row_number()) %>%
+  ungroup() %>%
   mutate(
     tier = case_when(
       pos == "WR" ~ case_when(
-        pos_rank <= 2  ~ 1,  # Adjust rank cutoff for Tier 1
-        pos_rank <= 4 ~ 2,  # Adjust rank cutoff for Tier 2
-        pos_rank <= 8 ~ 3,  # Adjust rank cutoff for Tier 3
+        pos_rank <= 2  ~ 1, 
+        pos_rank <= 4  ~ 2, 
+        pos_rank <= 8  ~ 3, 
         pos_rank <= 13 ~ 4,
         pos_rank <= 19 ~ 5,
         pos_rank <= 27 ~ 6,
@@ -237,8 +211,8 @@ weighted_projections <- weighted_projections %>%
       ),
       pos == "RB" ~ case_when(
         pos_rank <= 2  ~ 1,
-        pos_rank <= 4 ~ 2,
-        pos_rank <= 8 ~ 3,
+        pos_rank <= 4  ~ 2,
+        pos_rank <= 8  ~ 3,
         pos_rank <= 11 ~ 4,
         pos_rank <= 17 ~ 5,
         pos_rank <= 23 ~ 6,
@@ -258,8 +232,8 @@ weighted_projections <- weighted_projections %>%
       pos == "TE" ~ case_when(
         pos_rank <= 1  ~ 1,
         pos_rank <= 2  ~ 2,
-        pos_rank <= 4 ~ 3,
-        pos_rank <= 8 ~ 4,
+        pos_rank <= 4  ~ 3,
+        pos_rank <= 8  ~ 4,
         pos_rank <= 15 ~ 5,
         TRUE          ~ 6
       )
@@ -268,7 +242,26 @@ weighted_projections <- weighted_projections %>%
   )
 
 # ==========================================
-# 3. SAVE UPDATED DATASET BACK TO APP DATA
+# VISUALIZE POSITION DROP-OFF CURVES (OPTIONAL)
+# ==========================================
+positions_to_plot <- c("QB", "RB", "WR", "TE")
+plot_list <- lapply(positions_to_plot, function(p) {
+  weighted_projections %>%
+    filter(pos == p) %>%
+    ggplot(aes(x = pos_rank, y = weighted_pts, label = player)) +
+    geom_point(size = 2, color = "steelblue") +
+    geom_line(color = "steelblue", alpha = 0.5) +
+    geom_text(vjust = -0.8, size = 3, check_overlap = TRUE) +
+    theme_minimal() +
+    labs(
+      title = paste("Value Cliffs:", p, "Rank vs Projected Points"),
+      x = "Position Rank",
+      y = "Weighted Fantasy Points"
+    )
+})
+
+# ==========================================
+# 7. SAVE TO APP DATA FILE
 # ==========================================
 save(
   combined_projections_clean, 
@@ -276,5 +269,5 @@ save(
   file = "app_data.RData"
 )
 
-print("Updated manual tier mapping saved successfully!")
+print("Manual tier mapping applied and saved successfully!")
 print(table(weighted_projections$pos, weighted_projections$tier))

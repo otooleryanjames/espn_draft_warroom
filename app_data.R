@@ -8,24 +8,37 @@ library(tidyr)
 library(readr)
 library(janitor)
 
-# 1. READ & CLEAN FANTASYPROS CSV EXPORTS
+# 1. READ & CLEAN FANTASYPROS CSV EXPORTS (Safe Column Matching)
 fp_raw <- read_csv("fp_flex_proj.csv", show_col_types = FALSE) %>% clean_names()
 fp_raw_qb <- read_csv("fp_qb_proj.csv", show_col_types = FALSE) %>% clean_names()
+
+# Helper to safely grab numeric columns regardless of exact FP naming variations
+safe_num <- function(df, ...) {
+  cols <- c(...)
+  found <- intersect(cols, names(df))
+  if (length(found) > 0) {
+    suppressWarnings(as.numeric(df[[found[1]]]))
+  } else {
+    rep(0, nrow(df))
+  }
+}
 
 fp_clean_flex <- fp_raw %>%
   filter(!is.na(player), player != "") %>%
   mutate(
-    pos = str_extract(pos, "^[A-Za-z]+"),
-    pos = if_else(is.na(pos), "FLEX", pos),
+    pos = if ("pos" %in% names(.)) str_extract(pos, "^[A-Za-z]+") else "FLEX",
+    pos = if_else(is.na(pos) | pos == "", "FLEX", pos),
     player = str_squish(player) %>% str_remove_all(" (Jr\\.|Sr\\.|II|III|IV)$") %>% str_trim(),
     data_src = "FantasyPros",
-    rush_yds = suppressWarnings(as.numeric(yds_5)),
-    rush_tds = suppressWarnings(as.numeric(tds_6)),
-    rec = suppressWarnings(as.numeric(rec)),
-    rec_yds = suppressWarnings(as.numeric(yds_8)),
-    rec_tds = suppressWarnings(as.numeric(yds_9)),
-    fumbles_lost = suppressWarnings(as.numeric(fl)),
-    pass_yds = 0, pass_tds = 0, pass_int = 0
+    pass_yds = 0, 
+    pass_tds = 0, 
+    pass_int = 0,
+    rush_yds = safe_num(., "yds_5", "rush_yds", "yds"),
+    rush_tds = safe_num(., "tds_6", "rush_tds", "tds"),
+    rec      = safe_num(., "rec"),
+    rec_yds  = safe_num(., "yds_8", "rec_yds", "rec_yds_2"),
+    rec_tds  = safe_num(., "yds_9", "tds_9", "rec_tds"),
+    fumbles_lost = safe_num(., "fl", "fumbles_lost")
   ) %>%
   select(player, pos, team, pass_yds, pass_tds, pass_int, rush_yds, rush_tds, fumbles_lost, data_src, rec, rec_yds, rec_tds)
 
@@ -35,12 +48,12 @@ fp_clean_qb <- fp_raw_qb %>%
     pos = "QB",
     player = str_squish(player) %>% str_remove_all(" (Jr\\.|Sr\\.|II|III|IV)$") %>% str_trim(),
     data_src = "FantasyPros",
-    pass_yds = suppressWarnings(as.numeric(yds_5)),
-    pass_tds = suppressWarnings(as.numeric(yds_6)),
-    pass_int = suppressWarnings(as.numeric(ints)),
-    rush_yds = suppressWarnings(as.numeric(yds_9)),
-    rush_tds = suppressWarnings(as.numeric(yds_10)),
-    fumbles_lost = suppressWarnings(as.numeric(fl)),
+    pass_yds     = safe_num(., "yds_5", "pass_yds", "yds"),
+    pass_tds     = safe_num(., "tds_6", "pass_tds", "tds"),
+    pass_int     = safe_num(., "ints", "int", "interceptions"),
+    rush_yds     = safe_num(., "yds_9", "rush_yds"),
+    rush_tds     = safe_num(., "tds_10", "rush_tds"),
+    fumbles_lost = safe_num(., "fl", "fumbles_lost"),
     rec = 0, rec_yds = 0, rec_tds = 0
   ) %>%
   select(player, pos, team, pass_yds, pass_tds, pass_int, rush_yds, rush_tds, fumbles_lost, data_src, rec, rec_yds, rec_tds)

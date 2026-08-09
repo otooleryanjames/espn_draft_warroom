@@ -156,7 +156,7 @@ server <- function(input, output, session) {
         pct_diff = round(((weighted_pts - espn_pts) / espn_pts) * 100, 1)
       ) %>%
       arrange(model_adp) %>%
-      select(model_adp, tier, player, pos, team, weighted_pts, espn_pts, pts_diff, sources_count)
+      select(model_adp, tier, player, pos, team, weighted_pts, vor, espn_pts, pts_diff, sources_count)
   })
   
   active_board <- reactive({
@@ -292,16 +292,16 @@ server <- function(input, output, session) {
     filtered_data <- filtered_data %>%
       mutate(display_label = paste0("#", model_adp, " - Tier ", tier, " | ", player, " (", pos, ", ", team, ")"))
     
-    ggplot(filtered_data, aes(x = weighted_pts, y = reorder(display_label, weighted_pts))) +
+    ggplot(filtered_data, aes(x = vor, y = reorder(display_label, vor))) +
       geom_col(aes(fill = factor(tier)), width = 0.65, alpha = 0.9) +
-      geom_text(aes(label = sprintf("%.1f pts (Diff: %+ .1f)", weighted_pts, pts_diff)), 
+      geom_text(aes(label = sprintf("%.1f VOR (Proj: %.1f)", vor, weighted_pts)), 
                 hjust = -0.05, size = 4, fontface = "bold", color = "grey20") +
       scale_fill_brewer(palette = "Set2", name = "Tier") +
-      expand_limits(x = max(filtered_data$weighted_pts, na.rm = TRUE) * 1.35) +
+      expand_limits(x = max(filtered_data$vor, na.rm = TRUE) * 1.35) +
       labs(
         title = paste0("Draft Window: Picks ", min_pick, " to ", max_pick, " (Your Pick: #", input$my_pick, ")"),
-        subtitle = paste0("Scoring: ", input$scoring_format, " | Grouped by Tiers"),
-        x = "Weighted Model Projected Fantasy Points",
+        subtitle = paste0("Scoring: ", input$scoring_format, " | Grouped by Tiers (Value Over Replacement)"),
+        x = "Value Over Replacement (VOR)",
         y = NULL
       ) +
       theme_minimal(base_size = 13) +
@@ -397,7 +397,7 @@ server <- function(input, output, session) {
   
   output$draft_board_table <- renderDT({
     datatable(
-      active_board() %>% select(model_adp, tier, player, pos, team, weighted_pts, espn_pts, pts_diff),
+      active_board() %>% select(model_adp, tier, player, pos, team, weighted_pts, vor, espn_pts, pts_diff),
       options = list(pageLength = 15),
       selection = 'multiple'
     )

@@ -284,7 +284,7 @@ server <- function(input, output, session) {
     }
   })
   
-  # Helper function to generate styled position tables responsive to drafted players
+  # Helper function pointing to weighted_league_pts() so quadrants update reactively
   render_position_quadrant <- function(position_filter) {
     weighted_league_pts() %>%
       filter(pos == position_filter, !player %in% rv$drafted_all) %>%

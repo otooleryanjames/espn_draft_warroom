@@ -48,12 +48,12 @@ fp_clean_qb <- fp_raw_qb %>%
     pos = "QB",
     player = str_squish(player) %>% str_remove_all(" (Jr\\.|Sr\\.|II|III|IV)$") %>% str_trim(),
     data_src = "FantasyPros",
-    pass_yds     = safe_num(., "yds_5", "pass_yds", "yds"),
-    pass_tds     = safe_num(., "tds_6", "pass_tds", "tds"),
-    pass_int     = safe_num(., "ints", "int", "interceptions"),
-    rush_yds     = safe_num(., "yds_9", "rush_yds"),
-    rush_tds     = safe_num(., "tds_10", "rush_tds"),
-    fumbles_lost = safe_num(., "fl", "fumbles_lost"),
+    pass_yds       = safe_num(., "yds_5", "pass_yds", "yds"),
+    pass_tds       = safe_num(., "tds_6", "pass_tds", "tds"),
+    pass_int       = safe_num(., "ints", "int", "interceptions"),
+    rush_yds       = safe_num(., "yds_9", "rush_yds"),
+    rush_tds       = safe_num(., "tds_10", "rush_tds"),
+    fumbles_lost   = safe_num(., "fl", "fumbles_lost"),
     rec = 0, rec_yds = 0, rec_tds = 0
   ) %>%
   select(player, pos, team, pass_yds, pass_tds, pass_int, rush_yds, rush_tds, fumbles_lost, data_src, rec, rec_yds, rec_tds)
@@ -165,8 +165,7 @@ weighted_projections <- combined_projections_clean %>%
   ) %>%
   mutate(across(all_of(stat_cols_weighted), ~ ifelse(is.nan(.x), 0, .x)))
 
-# 6. DEFINE BASELINE LEAGUE SCORING & COMPUTE TIERED MODEL ADP
-# 6. DEFINE BASELINE LEAGUE SCORING & COMPUTE K-MEANS POSITION TIERS
+# 6. DEFINE BASELINE LEAGUE SCORING & COMPUTE MANUAL TIER CUTOFFS
 league_rules <- list(
   pass_yds = 0.04, pass_tds = 4.00, pass_int = -2.00, 
   rush_yds = 0.10, rush_tds = 6.00, 
@@ -188,49 +187,94 @@ calc_league_pts <- function(df, rules) {
     )
 }
 
-# Helper function to apply k-means clustering independently to each position
-assign_position_tiers <- function(df, num_tiers = 8) {
-  df %>%
-    group_by(pos) %>%
-    group_modify(~ {
-      pos_df <- .x
-      # If a position has fewer players than desired tiers, adjust tiers dynamically
-      k <- min(num_tiers, nrow(pos_df))
-      
-      if (k > 1) {
-        set.seed(42)
-        km <- kmeans(pos_df$weighted_pts, centers = k)
-        pos_df$tier_raw <- km$cluster
-        
-        # Map clusters so Tier 1 is always the highest point group
-        mapping <- pos_df %>%
-          group_by(tier_raw) %>%
-          summarise(mean_pts = mean(weighted_pts), .groups = "drop") %>%
-          arrange(desc(mean_pts)) %>%
-          mutate(tier = row_number()) %>%
-          select(tier_raw, tier)
-        
-        pos_df <- pos_df %>%
-          left_join(mapping, by = "tier_raw") %>%
-          select(-tier_raw)
-      } else {
-        pos_df$tier <- 1
-      }
-      pos_df
-    }) %>%
-    ungroup()
-}
+# ==========================================
+# VISUALIZE POSITION DROP-OFF CURVES & MANUALLY SET TIERS
+# ==========================================
 
-weighted_projections <- calc_league_pts(weighted_projections, league_rules) %>%
-  rename(weighted_pts = total_pts) %>%
-  filter(pos %in% c("QB", "RB", "WR", "TE")) %>%
-  arrange(desc(weighted_pts)) %>%
-  mutate(model_adp = row_number()) %>%
-  assign_position_tiers(num_tiers = 8)
+# 1. Generate and print individual plots for each position to inspect cliffs visually
+positions_to_plot <- c("QB", "RB", "WR", "TE")
 
-# 7. SAVE TO APP DATA FILE
+plot_list <- lapply(positions_to_plot, function(p) {
+  weighted_projections %>%
+    filter(pos == p) %>%
+    ggplot(aes(x = pos_rank, y = weighted_pts, label = player)) +
+    geom_point(size = 2, color = "steelblue") +
+    geom_line(color = "steelblue", alpha = 0.5) +
+    geom_text(vjust = -0.8, size = 3, check_overlap = TRUE) +
+    theme_minimal() +
+    labs(
+      title = paste("Value Cliffs:", p, "Rank vs Projected Points"),
+      x = "Position Rank",
+      y = "Weighted Fantasy Points"
+    )
+})
+
+# Display the plots in your viewer (run these one at a time or loop through them)
+# print(plot_list[[1]]) # QB
+# print(plot_list[[2]]) # RB
+# print(plot_list[[3]]) # WR
+# print(plot_list[[4]]) # TE
+
+# ==========================================
+# 2. UPDATE YOUR SECTION 6 TIER ASSIGNMENT MAPPING
+# ==========================================
+# Once you look at the plots, modify the position rank boundaries below 
+# to match your exact manual cutoffs where the value cliffs happen.
+
+weighted_projections <- weighted_projections %>%
+  mutate(
+    tier = case_when(
+      pos == "WR" ~ case_when(
+        pos_rank <= 2  ~ 1,  # Adjust rank cutoff for Tier 1
+        pos_rank <= 4 ~ 2,  # Adjust rank cutoff for Tier 2
+        pos_rank <= 8 ~ 3,  # Adjust rank cutoff for Tier 3
+        pos_rank <= 13 ~ 4,
+        pos_rank <= 19 ~ 5,
+        pos_rank <= 27 ~ 6,
+        pos_rank <= 36 ~ 7,
+        pos_rank <= 48 ~ 8,
+        TRUE          ~ 9
+      ),
+      pos == "RB" ~ case_when(
+        pos_rank <= 2  ~ 1,
+        pos_rank <= 4 ~ 2,
+        pos_rank <= 8 ~ 3,
+        pos_rank <= 11 ~ 4,
+        pos_rank <= 17 ~ 5,
+        pos_rank <= 23 ~ 6,
+        pos_rank <= 30 ~ 7,
+        pos_rank <= 36 ~ 8,
+        pos_rank <= 44 ~ 9,
+        TRUE          ~ 10
+      ),
+      pos == "QB" ~ case_when(
+        pos_rank <= 1  ~ 1,
+        pos_rank <= 5  ~ 2,
+        pos_rank <= 12 ~ 3,
+        pos_rank <= 16 ~ 4,
+        pos_rank <= 19 ~ 5,
+        TRUE          ~ 6
+      ),
+      pos == "TE" ~ case_when(
+        pos_rank <= 1  ~ 1,
+        pos_rank <= 2  ~ 2,
+        pos_rank <= 4 ~ 3,
+        pos_rank <= 8 ~ 4,
+        pos_rank <= 15 ~ 5,
+        TRUE          ~ 6
+      )
+    ),
+    model_adp = rank(-weighted_pts, ties.method = "min")
+  )
+
+# ==========================================
+# 3. SAVE UPDATED DATASET BACK TO APP DATA
+# ==========================================
 save(
   combined_projections_clean, 
   weighted_projections, 
   file = "app_data.RData"
 )
+
+print("Updated manual tier mapping saved successfully!")
+print(table(weighted_projections$pos, weighted_projections$tier))

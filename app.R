@@ -113,7 +113,6 @@ server <- function(input, output, session) {
   })
   
   weighted_league_pts <- reactive({
-    # weighted_projections is already calculated and weighted in app_data.RData
     weighted_projections
   })
   
@@ -135,9 +134,8 @@ server <- function(input, output, session) {
         pts_diff = round(weighted_pts - espn_pts, 1),
         pct_diff = round(((weighted_pts - espn_pts) / espn_pts) * 100, 1)
       ) %>%
-      arrange(desc(espn_pts)) %>%
-      mutate(model_adp = row_number()) %>%
-      select(model_adp, player, pos, team, weighted_pts, espn_pts, pts_diff, sources_count)
+      arrange(model_adp) %>%
+      select(model_adp, tier, player, pos, team, weighted_pts, espn_pts, pts_diff, sources_count)
   })
   
   observe({
@@ -215,20 +213,17 @@ server <- function(input, output, session) {
     }
     
     filtered_data <- filtered_data %>%
-      mutate(display_label = paste0("#", model_adp, " - ", player, " (", pos, ", ", team, ")"))
+      mutate(display_label = paste0("#", model_adp, " - Tier ", tier, " | ", player, " (", pos, ", ", team, ")"))
     
     ggplot(filtered_data, aes(x = weighted_pts, y = reorder(display_label, weighted_pts))) +
-      geom_col(aes(fill = pts_diff), width = 0.65, alpha = 0.9) +
+      geom_col(aes(fill = factor(tier)), width = 0.65, alpha = 0.9) +
       geom_text(aes(label = sprintf("%.1f pts (Diff: %+ .1f)", weighted_pts, pts_diff)), 
                 hjust = -0.05, size = 4, fontface = "bold", color = "grey20") +
-      scale_fill_gradient2(
-        low = "#e74c3c", mid = "#f5f5f5", high = "#2ecc71", 
-        midpoint = 0, name = "Model vs ESPN Diff"
-      ) +
-      expand_limits(x = max(filtered_data$weighted_pts, na.rm = TRUE) * 1.32) +
+      scale_fill_brewer(palette = "Set2", name = "Tier") +
+      expand_limits(x = max(filtered_data$weighted_pts, na.rm = TRUE) * 1.35) +
       labs(
         title = paste0("Draft Window: Picks ", min_pick, " to ", max_pick, " (Your Pick: #", input$my_pick, ")"),
-        subtitle = paste0("Scoring: ", input$scoring_format, " | Ranked by Weighted Points (Filtered Positions Only)"),
+        subtitle = paste0("Scoring: ", input$scoring_format, " | Grouped by Dynamic Percentage Tiers"),
         x = "Weighted Model Projected Fantasy Points",
         y = NULL
       ) +
@@ -328,7 +323,7 @@ server <- function(input, output, session) {
   
   output$draft_board_table <- renderDT({
     datatable(
-      active_board() %>% select(model_adp, player, pos, team, weighted_pts, espn_pts, pts_diff),
+      active_board() %>% select(model_adp, tier, player, pos, team, weighted_pts, espn_pts, pts_diff),
       options = list(pageLength = 15),
       selection = 'multiple'
     )

@@ -133,7 +133,7 @@ combined_projections_clean <- combined_projections %>%
 # 5. CREATE WEIGHTED PROJECTIONS MODEL
 source_weights <- tibble(
   data_src = c("FantasyPros", "FantasySharks", "sleeper", "FFToday", "CBS"),
-  weight   = c(1.00, 0.85, 0.80, 0.75, 0.35)
+  weight   = c(1.00, 0.85, 0.85, 0.75, 0.65)
 )
 
 stat_cols_weighted <- c("pass_yds", "pass_tds", "pass_int", "rush_yds", "rush_tds", "fumbles_lost", "rec", "rec_yds", "rec_tds")

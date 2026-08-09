@@ -12,8 +12,6 @@ ui <- fluidPage(
   titlePanel("Fantasy Football Draft War Room"),
   
   tabsetPanel(
-    # Existing or main tab for overall rankings if you have one, 
-    # or we can jump straight into the quadrants:
     tabPanel("Draft War Room",
              fluidRow(
                column(6, 

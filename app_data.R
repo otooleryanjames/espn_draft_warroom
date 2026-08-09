@@ -23,7 +23,7 @@ fp_clean_flex <- fp_raw %>%
     rush_tds = suppressWarnings(as.numeric(tds_6)),
     rec = suppressWarnings(as.numeric(rec)),
     rec_yds = suppressWarnings(as.numeric(yds_8)),
-    rec_tds = suppressWarnings(as.numeric(tds_9)),
+    rec_tds = suppressWarnings(as.numeric(yds_9)),
     fumbles_lost = suppressWarnings(as.numeric(fl)),
     pass_yds = 0, pass_tds = 0, pass_int = 0
   ) %>%
@@ -152,15 +152,14 @@ weighted_projections <- combined_projections_clean %>%
   ) %>%
   mutate(across(all_of(stat_cols_weighted), ~ ifelse(is.nan(.x), 0, .x)))
 
-# 2. Define your baseline league scoring rules
+# 6. DEFINE BASELINE LEAGUE SCORING & COMPUTE TIERED MODEL ADP
 league_rules <- list(
   pass_yds = 0.04, pass_tds = 4.00, pass_int = -2.00, 
   rush_yds = 0.10, rush_tds = 6.00, 
-  rec = 1.00,      # Adjust to 0.5 for Half-PPR if needed
+  rec = 1.00,      
   rec_yds = 0.10,  rec_tds = 6.00
 )
 
-# 3. Helper function to calculate total fantasy points
 calc_league_pts <- function(df, rules) {
   df %>%
     mutate(
@@ -175,13 +174,12 @@ calc_league_pts <- function(df, rules) {
     )
 }
 
-# 4. Process weighted projections, calculate points, and assign dynamic percentage-cliff tiers
 weighted_projections <- calc_league_pts(weighted_projections, league_rules) %>%
   rename(weighted_pts = total_pts) %>%
   filter(pos %in% c("QB", "RB", "WR", "TE")) %>%
-  group_by(pos) %>%
   arrange(desc(weighted_pts)) %>%
   mutate(
+    model_adp = row_number(),
     max_pts = max(weighted_pts),
     pct_of_max = weighted_pts / max_pts,
     tier = case_when(
@@ -196,9 +194,9 @@ weighted_projections <- calc_league_pts(weighted_projections, league_rules) %>%
   ungroup() %>%
   select(-max_pts, -pct_of_max)
 
-# 5. Save everything back out to your RData file for the app
+# 7. SAVE TO APP DATA FILE
 save(
   combined_projections_clean, 
-  weighted_projections,
+  weighted_projections, 
   file = "app_data.RData"
 )

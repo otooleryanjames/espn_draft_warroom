@@ -36,10 +36,10 @@ fp_clean_qb <- fp_raw_qb %>%
     player = str_squish(player) %>% str_remove_all(" (Jr\\.|Sr\\.|II|III|IV)$") %>% str_trim(),
     data_src = "FantasyPros",
     pass_yds = suppressWarnings(as.numeric(yds_5)),
-    pass_tds = suppressWarnings(as.numeric(tds_6)),
+    pass_tds = suppressWarnings(as.numeric(yds_6)),
     pass_int = suppressWarnings(as.numeric(ints)),
     rush_yds = suppressWarnings(as.numeric(yds_9)),
-    rush_tds = suppressWarnings(as.numeric(tds_10)),
+    rush_tds = suppressWarnings(as.numeric(yds_10)),
     fumbles_lost = suppressWarnings(as.numeric(fl)),
     rec = 0, rec_yds = 0, rec_tds = 0
   ) %>%

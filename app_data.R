@@ -166,6 +166,7 @@ weighted_projections <- combined_projections_clean %>%
   mutate(across(all_of(stat_cols_weighted), ~ ifelse(is.nan(.x), 0, .x)))
 
 # 6. DEFINE BASELINE LEAGUE SCORING & COMPUTE TIERED MODEL ADP
+# 6. DEFINE BASELINE LEAGUE SCORING & COMPUTE K-MEANS POSITION TIERS
 league_rules <- list(
   pass_yds = 0.04, pass_tds = 4.00, pass_int = -2.00, 
   rush_yds = 0.10, rush_tds = 6.00, 
@@ -187,25 +188,45 @@ calc_league_pts <- function(df, rules) {
     )
 }
 
+# Helper function to apply k-means clustering independently to each position
+assign_position_tiers <- function(df, num_tiers = 8) {
+  df %>%
+    group_by(pos) %>%
+    group_modify(~ {
+      pos_df <- .x
+      # If a position has fewer players than desired tiers, adjust tiers dynamically
+      k <- min(num_tiers, nrow(pos_df))
+      
+      if (k > 1) {
+        set.seed(42)
+        km <- kmeans(pos_df$weighted_pts, centers = k)
+        pos_df$tier_raw <- km$cluster
+        
+        # Map clusters so Tier 1 is always the highest point group
+        mapping <- pos_df %>%
+          group_by(tier_raw) %>%
+          summarise(mean_pts = mean(weighted_pts), .groups = "drop") %>%
+          arrange(desc(mean_pts)) %>%
+          mutate(tier = row_number()) %>%
+          select(tier_raw, tier)
+        
+        pos_df <- pos_df %>%
+          left_join(mapping, by = "tier_raw") %>%
+          select(-tier_raw)
+      } else {
+        pos_df$tier <- 1
+      }
+      pos_df
+    }) %>%
+    ungroup()
+}
+
 weighted_projections <- calc_league_pts(weighted_projections, league_rules) %>%
   rename(weighted_pts = total_pts) %>%
   filter(pos %in% c("QB", "RB", "WR", "TE")) %>%
   arrange(desc(weighted_pts)) %>%
-  mutate(
-    model_adp = row_number(),
-    max_pts = max(weighted_pts),
-    pct_of_max = weighted_pts / max_pts,
-    tier = case_when(
-      pct_of_max >= 0.90 ~ 1,
-      pct_of_max >= 0.80 ~ 2,
-      pct_of_max >= 0.70 ~ 3,
-      pct_of_max >= 0.60 ~ 4,
-      pct_of_max >= 0.50 ~ 5,
-      TRUE               ~ 6
-    )
-  ) %>%
-  ungroup() %>%
-  select(-max_pts, -pct_of_max)
+  mutate(model_adp = row_number()) %>%
+  assign_position_tiers(num_tiers = 8)
 
 # 7. SAVE TO APP DATA FILE
 save(

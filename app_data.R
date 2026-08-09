@@ -152,5 +152,53 @@ weighted_projections <- combined_projections_clean %>%
   ) %>%
   mutate(across(all_of(stat_cols_weighted), ~ ifelse(is.nan(.x), 0, .x)))
 
-# Save final processed state locally
-save(combined_projections_clean, weighted_projections, file = "app_data.RData")
+# 2. Define your baseline league scoring rules
+league_rules <- list(
+  pass_yds = 0.04, pass_tds = 4.00, pass_int = -2.00, 
+  rush_yds = 0.10, rush_tds = 6.00, 
+  rec = 1.00,      # Adjust to 0.5 for Half-PPR if needed
+  rec_yds = 0.10,  rec_tds = 6.00
+)
+
+# 3. Helper function to calculate total fantasy points
+calc_league_pts <- function(df, rules) {
+  df %>%
+    mutate(
+      total_pts = (coalesce(pass_yds, 0) * rules$pass_yds) +
+        (coalesce(pass_tds, 0) * rules$pass_tds) +
+        (coalesce(pass_int, 0) * rules$pass_int) +
+        (coalesce(rush_yds, 0) * rules$rush_yds) +
+        (coalesce(rush_tds, 0) * rules$rush_tds) +
+        (coalesce(rec, 0)      * rules$rec)     +
+        (coalesce(rec_yds, 0)  * rules$rec_yds) +
+        (coalesce(rec_tds, 0)  * rules$rec_tds)
+    )
+}
+
+# 4. Process weighted projections, calculate points, and assign dynamic percentage-cliff tiers
+weighted_projections <- calc_league_pts(weighted_projections, league_rules) %>%
+  rename(weighted_pts = total_pts) %>%
+  filter(pos %in% c("QB", "RB", "WR", "TE")) %>%
+  group_by(pos) %>%
+  arrange(desc(weighted_pts)) %>%
+  mutate(
+    max_pts = max(weighted_pts),
+    pct_of_max = weighted_pts / max_pts,
+    tier = case_when(
+      pct_of_max >= 0.90 ~ 1,
+      pct_of_max >= 0.80 ~ 2,
+      pct_of_max >= 0.70 ~ 3,
+      pct_of_max >= 0.60 ~ 4,
+      pct_of_max >= 0.50 ~ 5,
+      TRUE               ~ 6
+    )
+  ) %>%
+  ungroup() %>%
+  select(-max_pts, -pct_of_max)
+
+# 5. Save everything back out to your RData file for the app
+save(
+  combined_projections_clean, 
+  weighted_projections,
+  file = "app_data.RData"
+)

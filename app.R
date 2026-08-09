@@ -113,8 +113,8 @@ server <- function(input, output, session) {
   })
   
   weighted_league_pts <- reactive({
-    calc_league_pts(weighted_projections, league_rules()) %>%
-      rename(weighted_pts = total_pts)
+    # weighted_projections is already calculated and weighted in app_data.RData
+    weighted_projections
   })
   
   espn_pts <- reactive({

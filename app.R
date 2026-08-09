@@ -135,7 +135,74 @@ server <- function(input, output, session) {
   })
   
   weighted_league_pts <- reactive({
-    weighted_projections
+    weighted_projections %>%
+      select(-any_of(c("weighted_pts", "vor", "tier", "model_adp", "pos_rank"))) %>%
+      calc_league_pts(league_rules()) %>%
+      rename(weighted_pts = total_pts) %>%
+      filter(pos %in% c("QB", "RB", "WR", "TE")) %>%
+      group_by(pos) %>%
+      arrange(desc(weighted_pts)) %>%
+      mutate(pos_rank = row_number()) %>%
+      ungroup() %>%
+      mutate(
+        tier = case_when(
+          pos == "WR" ~ case_when(
+            pos_rank <= 2  ~ 1, 
+            pos_rank <= 4  ~ 2, 
+            pos_rank <= 8  ~ 3, 
+            pos_rank <= 13 ~ 4,
+            pos_rank <= 19 ~ 5,
+            pos_rank <= 27 ~ 6,
+            pos_rank <= 36 ~ 7,
+            pos_rank <= 48 ~ 8,
+            TRUE           ~ 9
+          ),
+          pos == "RB" ~ case_when(
+            pos_rank <= 2  ~ 1,
+            pos_rank <= 4  ~ 2,
+            pos_rank <= 8  ~ 3,
+            pos_rank <= 11 ~ 4,
+            pos_rank <= 17 ~ 5,
+            pos_rank <= 23 ~ 6,
+            pos_rank <= 30 ~ 7,
+            pos_rank <= 36 ~ 8,
+            pos_rank <= 44 ~ 9,
+            TRUE           ~ 10
+          ),
+          pos == "QB" ~ case_when(
+            pos_rank <= 1  ~ 1,
+            pos_rank <= 5  ~ 2,
+            pos_rank <= 12 ~ 3,
+            pos_rank <= 16 ~ 4,
+            pos_rank <= 19 ~ 5,
+            TRUE           ~ 6
+          ),
+          pos == "TE" ~ case_when(
+            pos_rank <= 1  ~ 1,
+            pos_rank <= 2  ~ 2,
+            pos_rank <= 4  ~ 3,
+            pos_rank <= 8  ~ 4,
+            pos_rank <= 15 ~ 5,
+            TRUE           ~ 6
+          )
+        )
+      ) %>%
+      left_join(
+        tibble(pos = c("QB", "RB", "WR", "TE"), rep_rank = c(16, 28, 32, 12)),
+        by = "pos"
+      ) %>%
+      group_by(pos) %>%
+      mutate(
+        baseline_pts = if_else(
+          max(pos_rank) >= first(rep_rank),
+          weighted_pts[pos_rank == first(rep_rank)][1],
+          tail(weighted_pts, 1)
+        ),
+        vor = weighted_pts - coalesce(baseline_pts, 0)
+      ) %>%
+      ungroup() %>%
+      select(-rep_rank, -baseline_pts) %>%
+      mutate(model_adp = rank(-weighted_pts, ties.method = "min"))
   })
   
   espn_pts <- reactive({
@@ -219,7 +286,7 @@ server <- function(input, output, session) {
   
   # Helper function to generate styled position tables responsive to drafted players
   render_position_quadrant <- function(position_filter) {
-    weighted_projections %>%
+    weighted_league_pts() %>%
       filter(pos == position_filter, !player %in% rv$drafted_all) %>%
       select(pos_rank, player, team, weighted_pts, tier) %>%
       datatable(

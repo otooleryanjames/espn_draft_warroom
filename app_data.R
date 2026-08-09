@@ -249,7 +249,7 @@ weighted_projections <- weighted_projections %>%
         pos_rank <= 2  ~ 1,
         pos_rank <= 4  ~ 2,
         pos_rank <= 8  ~ 3,
-        pos_rank <= 11 ~ 4,
+        pos_rank <= 12 ~ 4,
         pos_rank <= 17 ~ 5,
         pos_rank <= 23 ~ 6,
         pos_rank <= 30 ~ 7,

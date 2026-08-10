@@ -56,9 +56,6 @@ ui <- fluidPage(
                      choices = NULL, multiple = TRUE),
       hr(),
       h4("Draft Actions"),
-      actionButton("draft_others_btn", "Mark Taken (Leaguemates)", class = "btn-secondary btn-sm", style = "width: 100%; margin-bottom: 5px;"),
-      actionButton("draft_me_btn", "Draft to MY ROSTER", class = "btn-success", style = "width: 100%; font-weight: bold; margin-bottom: 10px;"),
-      hr(),
       actionButton("undo_draft", "Undo Last Action", class = "btn-warning btn-sm", style = "width: 100%; margin-bottom: 5px;"),
       actionButton("reset_draft", "Reset Entire Draft", class = "btn-danger btn-sm", style = "width: 100%;")
     ),
@@ -100,7 +97,7 @@ ui <- fluidPage(
                  br(),
                  tableOutput("my_roster_table")),
         tabPanel("Available Board", 
-                 h5("Click rows to select, then click an action button on the left panel."),
+                 h5("Check 'Taken' if picked by a leaguemate, or 'DraftMe' to add to your roster."),
                  br(),
                  DTOutput("draft_board_table"))
       )
@@ -253,38 +250,48 @@ server <- function(input, output, session) {
     }
   })
   
-  observeEvent(input$draft_others_btn, {
-    selected_row <- input$draft_board_table_rows_selected
-    if(length(selected_row) > 0) {
-      current_board <- active_board()
-      players_to_draft <- current_board$player[selected_row]
+  shinyInput <- function(FUN, len, id, ...) {
+    inputs <- character(len)
+    for (i in seq_len(len)) {
+      inputs[i] <- as.character(FUN(paste0(id, i), ...))
+    }
+    inputs
+  }
+  
+  observe({
+    current_board <- active_board()
+    n <- nrow(current_board)
+    if (n == 0) return()
+    
+    taken_clicks <- sapply(seq_len(n), function(i) {
+      val <- input[[paste0("taken_", i)]]
+      if (is.null(val)) FALSE else val
+    })
+    
+    mine_clicks <- sapply(seq_len(n), function(i) {
+      val <- input[[paste0("mine_", i)]]
+      if (is.null(val)) FALSE else val
+    })
+    
+    if (any(taken_clicks) || any(mine_clicks)) {
+      players_taken <- current_board$player[taken_clicks]
+      players_mine <- current_board$player[mine_clicks]
       
       rv$history <- c(rv$history, list(list(
         drafted_all_snapshot = rv$drafted_all,
         my_roster_snapshot   = rv$my_roster
       )))
       
-      rv$drafted_all <- unique(c(rv$drafted_all, players_to_draft))
+      if (length(players_taken) > 0) {
+        rv$drafted_all <- unique(c(rv$drafted_all, players_taken))
+      }
+      if (length(players_mine) > 0) {
+        rv$drafted_all <- unique(c(rv$drafted_all, players_mine))
+        rv$my_roster   <- unique(c(rv$my_roster, players_mine))
+      }
     }
   })
   
-  observeEvent(input$draft_me_btn, {
-    selected_row <- input$draft_board_table_rows_selected
-    if(length(selected_row) > 0) {
-      current_board <- active_board()
-      players_to_draft <- current_board$player[selected_row]
-      
-      rv$history <- c(rv$history, list(list(
-        drafted_all_snapshot = rv$drafted_all,
-        my_roster_snapshot   = rv$my_roster
-      )))
-      
-      rv$drafted_all <- unique(c(rv$drafted_all, players_to_draft))
-      rv$my_roster   <- unique(c(rv$my_roster, players_to_draft))
-    }
-  })
-  
-  # Helper function pointing to weighted_league_pts() so quadrants update reactively
   render_position_quadrant <- function(position_filter) {
     weighted_league_pts() %>%
       filter(pos == position_filter, !player %in% rv$drafted_all) %>%
@@ -437,7 +444,7 @@ server <- function(input, output, session) {
   
   output$roster_summary <- renderText({
     if(length(rv$my_roster) == 0) {
-      return("Your roster is currently empty. Select players from the 'Available Board' tab and click 'Draft to MY ROSTER'.")
+      return("Your roster is currently empty. Check 'DraftMe' boxes on the 'Available Board' tab to add players.")
     }
     roster_df <- weighted_league_pts() %>% 
       inner_join(espn_pts(), by = c("player", "pos", "team")) %>% 
@@ -463,10 +470,26 @@ server <- function(input, output, session) {
   }, striped = TRUE, bordered = TRUE, spacing = "s")
   
   output$draft_board_table <- renderDT({
+    board <- active_board()
+    n <- nrow(board)
+    
+    if (n > 0) {
+      board$Taken <- shinyInput(checkboxInput, n, "taken_", value = FALSE, label = NULL)
+      board$DraftMe <- shinyInput(checkboxInput, n, "mine_", value = FALSE, label = NULL)
+    } else {
+      board$Taken <- character(0)
+      board$DraftMe <- character(0)
+    }
+    
     datatable(
-      active_board() %>% select(model_adp, tier, player, pos, team, weighted_pts, vor, espn_pts, pts_diff),
-      options = list(pageLength = 15),
-      selection = 'multiple'
+      board %>% select(Taken, DraftMe, model_adp, tier, player, pos, team, weighted_pts, vor, espn_pts, pts_diff),
+      escape = FALSE,
+      options = list(
+        pageLength = 15,
+        preDrawCallback = JS('function() { Shiny.unbindAll(this.api().table().node()); }'),
+        drawCallback = JS('function() { Shiny.bindAll(this.api().table().node()); }')
+      ),
+      selection = 'none'
     )
   })
   

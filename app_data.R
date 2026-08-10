@@ -148,7 +148,10 @@ combined_projections_clean <- combined_projections %>%
       "WSH" ~ "WAS",
       .default = team
     ),
-    player = player %>% str_remove_all(" (Jr\\.|Sr\\.|II|III|IV)$") %>% str_trim()
+    player = player %>% 
+      str_remove_all(" (Jr\\.|Sr\\.|II|III|IV)$") %>% 
+      str_remove_all("\\.") %>% # Remove all periods from names (e.g., D.J. -> DJ)
+      str_squish()
   )
 
 # ==========================================

@@ -86,7 +86,7 @@ ui <- fluidPage(
                  br(),
                  tableOutput("my_roster_table")),
         tabPanel("Available Board", 
-                 h5("Click a row to select a player, then click a button on the left sidebar to draft them."),
+                 h5("Click rows to select players (supports multi-select), then click a button on the left sidebar to draft them."),
                  br(),
                  DTOutput("draft_board_table"))
       )
@@ -259,18 +259,40 @@ server <- function(input, output, session) {
     max_pick <- input$my_pick + input$window
     
     filtered_data <- board %>% filter(model_adp >= min_pick, model_adp <= max_pick)
-    if(nrow(filtered_data) == 0) return()
+    if(nrow(filtered_data) == 0) {
+      plot.new()
+      text(0.5, 0.5, "No players available in this window matching your position filters!", cex = 1.2)
+      return()
+    }
     
     filtered_data <- filtered_data %>%
       mutate(display_label = paste0("#", model_adp, " - Tier ", tier, " | ", player, " (", pos, ", ", team, ")"))
     
     ggplot(filtered_data, aes(x = vor, y = reorder(display_label, vor))) +
       geom_col(aes(fill = factor(tier)), width = 0.65, alpha = 0.9) +
-      geom_text(aes(label = sprintf("%.1f VOR (Proj: %.1f)", vor, weighted_pts)), hjust = -0.05, size = 4, fontface = "bold", color = "grey20") +
+      geom_text(aes(label = sprintf("%.1f VOR (Proj: %.1f)", vor, weighted_pts)), 
+                hjust = -0.05, size = 4, fontface = "bold", color = "grey20") +
       scale_fill_brewer(palette = "Set2", name = "Tier") +
       expand_limits(x = max(filtered_data$vor, na.rm = TRUE) * 1.35) +
-      labs(title = paste0("Draft Window: Picks ", min_pick, " to ", max_pick), x = "VOR", y = NULL) +
-      theme_minimal(base_size = 13)
+      labs(
+        title = paste0("Draft Window: Picks ", min_pick, " to ", max_pick, " (Your Pick: #", input$my_pick, ")"),
+        subtitle = paste0("Scoring: ", input$scoring_format, " | Grouped by Tiers (Value Over Replacement)"),
+        x = "Value Over Replacement (VOR)",
+        y = NULL
+      ) +
+      theme_minimal(base_size = 13) +
+      theme(
+        plot.title = element_text(face = "bold", size = 16),
+        plot.subtitle = element_text(size = 12, color = "grey40"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.y = element_text(size = 13, face = "bold", color = "grey20"),
+        axis.text.x = element_text(size = 13, face = "bold", color = "grey20"),
+        axis.title.x = element_text(size = 13, face = "bold", margin = margin(t = 10)),
+        legend.position = "bottom",
+        legend.title = element_text(size = 11, face = "bold"),
+        legend.text = element_text(size = 10)
+      )
   })
   
   output$volatility_plot <- renderPlot({
@@ -281,7 +303,28 @@ server <- function(input, output, session) {
     
     ggplot(source_breakdown, aes(x = total_pts, y = reorder(player, total_pts, FUN = median), color = data_src)) +
       geom_point(size = 4.5, alpha = 0.85, position = position_jitter(height = 0.1, width = 0)) +
-      theme_minimal(base_size = 12)
+      geom_text(aes(label = data_src), vjust = -1.3, size = 3.5, show.legend = FALSE) +
+      labs(
+        title = "Multi-Player Volatility & Range of Outcomes",
+        subtitle = paste0("Scoring: ", input$scoring_format, " | Comparing source projections across candidate targets"),
+        x = "Projected Fantasy Points (Individual Source Output)",
+        y = NULL,
+        color = "Data Source"
+      ) +
+      theme_minimal(base_size = 12) +
+      theme(
+        plot.title = element_text(face = "bold", size = 14),
+        plot.subtitle = element_text(size = 11, color = "grey40"),
+        panel.grid.major = element_blank(),  
+        panel.grid.minor = element_blank(),  
+        axis.text.y = element_text(size = 14, face = "bold", color = "grey20"), 
+        axis.text.x = element_text(size = 13, face = "bold", color = "grey20"),
+        legend.position = "right"
+      ) +
+      expand_limits(x = c(
+        min(source_breakdown$total_pts, na.rm = TRUE) * 0.9,
+        max(source_breakdown$total_pts, na.rm = TRUE) * 1.15
+      ))
   })
   
   output$volatility_table <- renderTable({
@@ -297,7 +340,13 @@ server <- function(input, output, session) {
   output$roster_summary <- renderText({
     if(length(rv$my_roster) == 0) return("Your roster is currently empty.")
     roster_df <- weighted_league_pts() %>% inner_join(espn_pts(), by = c("player", "pos", "team")) %>% filter(player %in% rv$my_roster)
-    paste0("Players Drafted: ", nrow(roster_df), " | Total Projected Points: ", round(sum(roster_df$weighted_pts, na.rm = TRUE), 1))
+    total_proj <- sum(roster_df$weighted_pts, na.rm = TRUE)
+    pos_counts <- table(roster_df$pos)
+    pos_breakdown <- paste(names(pos_counts), pos_counts, sep = ": ", collapse = " | ")
+    
+    paste0("Players Drafted: ", nrow(roster_df), 
+           " | Total Projected Points: ", round(total_proj, 1), 
+           "\nPosition Breakdown: ", pos_breakdown)
   })
   
   output$my_roster_table <- renderTable({

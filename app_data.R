@@ -50,12 +50,12 @@ fp_clean_qb <- fp_raw_qb %>%
     pos = "QB",
     player = str_squish(player) %>% str_remove_all(" (Jr\\.|Sr\\.|II|III|IV)$") %>% str_trim(),
     data_src = "FantasyPros",
-    pass_yds       = safe_num(., "yds_5", "pass_yds", "yds"),
-    pass_tds       = safe_num(., "tds_6", "pass_tds", "tds"),
-    pass_int       = safe_num(., "ints", "int", "interceptions"),
-    rush_yds       = safe_num(., "yds_9", "rush_yds"),
-    rush_tds       = safe_num(., "tds_10", "rush_tds"),
-    fumbles_lost   = safe_num(., "fl", "fumbles_lost"),
+    pass_yds        = safe_num(., "yds_5", "pass_yds", "yds"),
+    pass_tds        = safe_num(., "tds_6", "pass_tds", "tds"),
+    pass_int        = safe_num(., "ints", "int", "interceptions"),
+    rush_yds        = safe_num(., "yds_9", "rush_yds"),
+    rush_tds        = safe_num(., "tds_10", "rush_tds"),
+    fumbles_lost    = safe_num(., "fl", "fumbles_lost"),
     rec = 0, rec_yds = 0, rec_tds = 0
   ) %>%
   select(player, pos, team, pass_yds, pass_tds, pass_int, rush_yds, rush_tds, fumbles_lost, data_src, rec, rec_yds, rec_tds)
@@ -230,12 +230,51 @@ baselines <- weighted_projections %>%
     .groups = "drop"
   )
 
-# 4. Join baseline, compute VOR, map manual tiers, and calculate model ADP
+# ==========================================
+# 7. INTEGRATE STRENGTH OF SCHEDULE (SoS)
+# ==========================================
+sharp_sos <- tibble(
+  team = c("PHI", "MIN", "SEA", "DET", "LAR", "ATL", "LAC", "CLE", "NYG", "MIA", 
+           "DEN", "NYJ", "BUF", "CIN", "KC", "JAX", "GB", "NO", "TEN", "IND", 
+           "HOU", "ARI", "DAL", "BAL", "SF", "LV", "TB", "NE", "WAS", "PIT", "CHI", "CAR"),
+  sharp_pass_rank = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32)
+)
+
+sharp_rush_sos <- tibble(
+  team = c("DET", "NO", "SEA", "LAR", "MIN", "TB", "PHI", "GB", "WAS", "MIA", 
+           "ATL", "HOU", "BAL", "CHI", "NYJ", "DAL", "NYG", "IND", "JAX", "SF", 
+           "CLE", "KC", "NE", "TEN", "DEN", "ARI", "CAR", "PIT", "BUF", "CIN", "LV", "LAC"),
+  sharp_rush_rank = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32)
+)
+
+yahoo_sos_raw <- tibble(
+  team = c("ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE", "DAL", "DEN", 
+           "DET", "GB", "HOU", "IND", "JAX", "KC", "LV", "LAC", "LAR", "MIA", 
+           "MIN", "NE", "NO", "NYG", "NYJ", "PHI", "PIT", "SF", "SEA", "TB", "TEN", "WAS"),
+  yahoo_qb = c(26, 12, 14, 24, 27, 31, 5, 2, 16, 2, 1, 15, 9, 8, 4, 30, 32, 23, 17, 25, 6, 19, 10, 7, 20, 1, 28, 29, 13, 22, 3, 18),
+  yahoo_rb = c(29, 21, 12, 31, 32, 28, 27, 10, 9, 12, 11, 17, 15, 7, 14, 20, 30, 18, 4, 19, 13, 26, 3, 11, 25, 1, 23, 16, 5, 24, 8, 6)
+)
+
+sos_master <- sharp_sos %>%
+  left_join(sharp_rush_sos, by = "team") %>%
+  left_join(yahoo_sos_raw, by = "team") %>%
+  mutate(
+    composite_pass_rank = round((sharp_pass_rank + yahoo_qb) / 2, 1),
+    composite_rush_rank = round((sharp_rush_rank + yahoo_rb) / 2, 1)
+  )
+
+# 4. Join baseline, compute VOR, map manual tiers, compute model ADP, and join SoS
 weighted_projections <- weighted_projections %>%
   left_join(baselines, by = "pos") %>%
+  left_join(sos_master %>% select(team, composite_pass_rank, composite_rush_rank), by = "team") %>%
   mutate(
     baseline_pts = coalesce(baseline_pts, 0),
     vor = weighted_pts - baseline_pts,
+    sos_rank = case_when(
+      pos %in% c("QB", "WR", "TE") ~ composite_pass_rank,
+      pos == "RB" ~ composite_rush_rank,
+      TRUE ~ 16
+    ),
     tier = case_when(
       pos == "WR" ~ case_when(
         pos_rank <= 2  ~ 1, 
@@ -279,67 +318,10 @@ weighted_projections <- weighted_projections %>%
     ),
     model_adp = rank(-weighted_pts, ties.method = "min")
   ) %>%
-  select(-baseline_pts)
+  select(-baseline_pts, -composite_pass_rank, -composite_rush_rank)
 
 # ==========================================
-# VISUALIZE POSITION DROP-OFF CURVES (OPTIONAL)
-# ==========================================
-positions_to_plot <- c("QB", "RB", "WR", "TE")
-plot_list <- lapply(positions_to_plot, function(p) {
-  weighted_projections %>%
-    filter(pos == p) %>%
-    ggplot(aes(x = pos_rank, y = weighted_pts, label = player)) +
-    geom_point(size = 2, color = "steelblue") +
-    geom_line(color = "steelblue", alpha = 0.5) +
-    geom_text(vjust = -0.8, size = 3, check_overlap = TRUE) +
-    theme_minimal() +
-    labs(
-      title = paste("Value Cliffs:", p, "Rank vs Projected Points"),
-      x = "Position Rank",
-      y = "Weighted Fantasy Points"
-    )
-})
-
-# 1. Load the Sharp Football Full-Season SoS Data (1 = Easiest)
-sharp_sos <- tibble(
-  team = c("PHI", "MIN", "SEA", "DET", "LAR", "ATL", "LAC", "CLE", "NYG", "MIA", 
-           "DEN", "NYJ", "BUF", "CIN", "KC", "JAX", "GB", "NO", "TEN", "IND", 
-           "HOU", "ARI", "DAL", "BAL", "SF", "LV", "TB", "NE", "WAS", "PIT", "CHI", "CAR"),
-  sharp_pass_rank = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32)
-)
-
-sharp_rush_sos <- tibble(
-  team = c("DET", "NO", "SEA", "LAR", "MIN", "TB", "PHI", "GB", "WAS", "MIA", 
-           "ATL", "HOU", "BAL", "CHI", "NYJ", "DAL", "NYG", "IND", "JAX", "SF", 
-           "CLE", "KC", "NE", "TEN", "DEN", "ARI", "CAR", "PIT", "BUF", "CIN", "LV", "LAC"),
-  sharp_rush_rank = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32)
-)
-
-# 2. Extract and format your Yahoo/FFToolbox dataset from your earlier structure
-# (Note: Yahoo's original table had numbers where lower usually meant harder or vice versa. 
-# We align them here so 1 is Easiest / 32 is Hardest for direct comparison).
-yahoo_sos_raw <- tibble(
-  team = c("ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE", "DAL", "DEN", 
-           "DET", "GB", "HOU", "IND", "JAX", "KC", "LV", "LAC", "LAR", "MIA", 
-           "MIN", "NE", "NO", "NYG", "NYJ", "PHI", "PIT", "SF", "SEA", "TB", "TEN", "WAS"),
-  yahoo_qb = c(26, 12, 14, 24, 27, 31, 5, 2, 16, 2, 1, 15, 9, 8, 4, 30, 32, 23, 17, 25, 6, 19, 10, 7, 20, 1, 28, 29, 13, 22, 3, 18),
-  yahoo_rb = c(29, 21, 12, 31, 32, 28, 27, 10, 9, 12, 11, 17, 15, 7, 14, 20, 30, 18, 4, 19, 13, 26, 3, 11, 25, 1, 23, 16, 5, 24, 8, 6)
-)
-
-# 3. Merge into a unified Strength of Schedule Master Table
-sos_master <- sharp_sos %>%
-  left_join(sharp_rush_sos, by = "team") %>%
-  left_join(yahoo_sos_raw, by = "team") %>%
-  mutate(
-    # Composite Passing Rank (blending Sharp projections + Yahoo historical)
-    composite_pass_rank = round((sharp_pass_rank + yahoo_qb) / 2, 1),
-    # Composite Rushing Rank (blending Sharp projections + Yahoo historical)
-    composite_rush_rank = round((sharp_rush_rank + yahoo_rb) / 2, 1)
-  ) %>%
-  arrange(composite_pass_rank)
-
-# ==========================================
-# 7. SAVE TO APP DATA FILE
+# 8. SAVE TO APP DATA FILE
 # ==========================================
 save(
   combined_projections_clean, 
@@ -347,6 +329,6 @@ save(
   file = "app_data.RData"
 )
 
-print("Manual tier mapping & VOR calculation completed successfully!")
+print("Manual tier mapping, VOR calculation, and SoS integration completed successfully!")
 print("Baseline thresholds applied: QB16, RB28, WR32, TE12")
 print(table(weighted_projections$pos, weighted_projections$tier))

@@ -149,6 +149,16 @@ server <- function(input, output, session) {
       mutate(
         espn_pts = coalesce(espn_pts, weighted_pts)
       ) %>%
+      # Calculate raw delta from ESPN, then subtract the positional mean delta 
+      # dynamically to eliminate systemic platform inflation/deflation biases.
+      mutate(raw_delta = weighted_pts - espn_pts) %>%
+      group_by(pos) %>%
+      mutate(
+        pos_mean_delta = mean(raw_delta, na.rm = TRUE),
+        net_delta = raw_delta - pos_mean_delta,
+        pos_sd_delta = sd(raw_delta, na.rm = TRUE)
+      ) %>%
+      ungroup() %>%
       group_by(pos) %>%
       arrange(desc(espn_pts)) %>%
       mutate(pos_adp = row_number()) %>%
@@ -183,16 +193,18 @@ server <- function(input, output, session) {
     ref_val <- input$my_pick
     span <- input$window_half_size
     
-    # Adjusted counts: one fewer above (span - 1), one additional after (span + 2)
     ahead_pool <- ranked_board %>% filter(overall_adp < ref_val) %>% arrange(desc(overall_adp)) %>% head(max(0, span - 1)) %>% arrange(overall_adp)
     after_pool <- ranked_board %>% filter(overall_adp >= ref_val) %>% arrange(overall_adp) %>% head(span + 2)
     
     window_data <- bind_rows(ahead_pool, after_pool) %>%
       mutate(
+        # Dynamic thresholding based on the positional standard deviation of deltas.
+        # This replaces hardcoded static point gaps.
+        dyn_threshold = pmax(1.0, 0.35 * coalesce(pos_sd_delta, 2.0)),
         Model_Outlook = case_when(
-          weighted_pts > espn_pts + 1.0  ~ "🔥 Model Likes More",
-          weighted_pts < espn_pts - 1.0  ~ "❄️ Model Likes Less",
-          TRUE                           ~ "⚖️ Matches ESPN"
+          net_delta > dyn_threshold   ~ "🔥 Model Likes More",
+          net_delta < -dyn_threshold  ~ "❄️ Model Likes Less",
+          TRUE                        ~ "⚖️ Matches ESPN"
         ),
         "Rank" = overall_adp,
         "Tier" = tier,

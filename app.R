@@ -15,23 +15,23 @@ calc_league_pts <- function(df, rules) {
       pass_int_c = coalesce(pass_int, 0),
       rush_yds_c = coalesce(rush_yds, 0),
       rush_tds_c = coalesce(rush_tds, 0),
-      rec_c = coalesce(rec, 0),
-      rec_yds_c = coalesce(rec_yds, 0),
-      rec_tds_c = coalesce(rec_tds, 0),
+      rec_c      = coalesce(rec, 0),
+      rec_yds_c  = coalesce(rec_yds, 0),
+      rec_tds_c  = coalesce(rec_tds, 0),
       total_pts = (pass_yds_c * rules$pass_yds) +
         (pass_tds_c * rules$pass_tds) +
         (pass_int_c * rules$pass_int) +
         (rush_yds_c * rules$rush_yds) +
         (rush_tds_c * rules$rush_tds) +
-        (rec_c     * rules$rec)     +
-        (rec_yds_c * rules$rec_yds) +
-        (rec_tds_c * rules$rec_tds)
+        (rec_c      * rules$rec)     +
+        (rec_yds_c  * rules$rec_yds) +
+        (rec_tds_c  * rules$rec_tds)
     ) %>%
     select(-ends_with("_c"))
 }
 
 ui <- fluidPage(
-  titlePanel("🏈 Live Draft War Room"),
+  titlePanel("🏈 Fantasy Player Comparison Hub"),
   
   sidebarLayout(
     sidebarPanel(
@@ -43,9 +43,7 @@ ui <- fluidPage(
                                "Standard (0.0 Rec)" = "Standard"),
                    selected = "PPR"),
       hr(),
-      h4("Draft Controls"),
-      numericInput("my_pick", "Your Current Pick #:", value = 14, min = 1, max = 300),
-      sliderInput("window", "Draft Window (+/- Picks):", value = 15, min = 5, max = 30),
+      h4("Player Filtering"),
       checkboxGroupInput("target_pos", "Positions to Show:",
                          choices = c("QB", "RB", "WR", "TE"),
                          selected = c("RB", "WR", "TE")),
@@ -54,11 +52,9 @@ ui <- fluidPage(
       selectizeInput("compare_players", "Select 2+ Players to Compare:",
                      choices = NULL, multiple = TRUE),
       hr(),
-      h4("Draft Actions (Available Board)"),
-      actionButton("draft_others_btn", "Mark Selected as Taken", class = "btn-secondary btn-sm", style = "width: 100%; margin-bottom: 8px;"),
-      actionButton("draft_me_btn", "Draft to My Roster", class = "btn-success btn-sm", style = "width: 100%; margin-bottom: 15px;"),
-      actionButton("undo_draft", "Undo Last Action", class = "btn-warning btn-sm", style = "width: 100%; margin-bottom: 5px;"),
-      actionButton("reset_draft", "Reset Entire Draft", class = "btn-danger btn-sm", style = "width: 100%;")
+      h4("Draft Window Settings"),
+      numericInput("my_pick", "Reference Pick #:", value = 14, min = 1, max = 300),
+      sliderInput("window", "Draft Window (+/- Picks):", value = 15, min = 5, max = 30)
     ),
     
     mainPanel(
@@ -77,16 +73,18 @@ ui <- fluidPage(
         ),
         tabPanel("Target Window (Bars)", 
                  plotOutput("lollipop_plot", height = "650px")),
-        tabPanel("Multi-Player Volatility", 
-                 plotOutput("volatility_plot", height = "500px"),
-                 tableOutput("volatility_table")),
-        tabPanel("My Roster", 
-                 h4("Your Drafted Roster & Projected Output"),
-                 verbatimTextOutput("roster_summary"),
+        tabPanel("Player Comparison Hub", 
+                 plotOutput("volatility_plot", height = "450px"),
+                 hr(),
+                 h4("Statistical Range & Expert Consensus"),
+                 tableOutput("volatility_summary_card"),
+                 hr(),
+                 plotOutput("stat_breakdown_plot", height = "450px"),
                  br(),
-                 tableOutput("my_roster_table")),
-        tabPanel("Available Board", 
-                 h5("Click rows to select players (supports multi-select), then click a button on the left sidebar to draft them."),
+                 h4("Source-by-Source Projection Breakdown"),
+                 tableOutput("volatility_table")),
+        tabPanel("Master Player Board", 
+                 h5("Complete filtered pool of players sorted by Model ADP and Value Over Replacement."),
                  br(),
                  DTOutput("draft_board_table"))
       )
@@ -95,12 +93,6 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
-  
-  rv <- reactiveValues(
-    drafted_all = character(0),
-    my_roster = character(0),
-    history = list()
-  )
   
   league_rules <- reactive({
     rec_pts <- switch(input$scoring_format,
@@ -162,19 +154,15 @@ server <- function(input, output, session) {
   draft_board_master <- reactive({
     req(input$target_pos)
     weighted_league_pts() %>%
-      inner_join(espn_pts(), by = c("player", "pos", "team")) %>%
+      left_join(espn_pts(), by = c("player", "pos", "team")) %>%
       filter(pos %in% input$target_pos) %>% 
       mutate(
+        espn_pts = coalesce(espn_pts, weighted_pts),
         pts_diff = round(weighted_pts - espn_pts, 1),
         pct_diff = round(((weighted_pts - espn_pts) / espn_pts) * 100, 1)
       ) %>%
       arrange(model_adp) %>%
       select(model_adp, tier, player, pos, team, weighted_pts, vor, espn_pts, pts_diff, sources_count)
-  })
-  
-  active_board <- reactive({
-    draft_board_master() %>%
-      filter(!player %in% rv$drafted_all)
   })
   
   observe({
@@ -184,55 +172,9 @@ server <- function(input, output, session) {
                          server = TRUE)
   })
   
-  observeEvent(input$draft_others_btn, {
-    sel <- input$draft_board_table_rows_selected
-    if(length(sel) > 0) {
-      board <- active_board()
-      players_to_take <- board$player[sel]
-      
-      rv$history <- c(rv$history, list(list(
-        drafted_all_snapshot = rv$drafted_all,
-        my_roster_snapshot   = rv$my_roster
-      )))
-      
-      rv$drafted_all <- unique(c(rv$drafted_all, players_to_take))
-    }
-  })
-  
-  observeEvent(input$draft_me_btn, {
-    sel <- input$draft_board_table_rows_selected
-    if(length(sel) > 0) {
-      board <- active_board()
-      players_to_draft <- board$player[sel]
-      
-      rv$history <- c(rv$history, list(list(
-        drafted_all_snapshot = rv$drafted_all,
-        my_roster_snapshot   = rv$my_roster
-      )))
-      
-      rv$drafted_all <- unique(c(rv$drafted_all, players_to_draft))
-      rv$my_roster   <- unique(c(rv$my_roster, players_to_draft))
-    }
-  })
-  
-  observeEvent(input$reset_draft, {
-    rv$drafted_all <- character(0)
-    rv$my_roster <- character(0)
-    rv$history <- list()
-  })
-  
-  observeEvent(input$undo_draft, {
-    if(length(rv$history) > 0) {
-      last_action <- tail(rv$history, 1)[[1]]
-      rv$history <- head(rv$history, -1)
-      rv$drafted_all <- last_action$drafted_all_snapshot
-      rv$my_roster <- last_action$my_roster_snapshot
-    }
-  })
-  
   render_position_quadrant <- function(position_filter) {
     weighted_league_pts() %>%
-      filter(pos == position_filter, !player %in% rv$drafted_all) %>%
+      filter(pos == position_filter) %>%
       select(pos_rank, player, team, weighted_pts, tier) %>%
       datatable(
         options = list(pageLength = 25, dom = 't', scrollY = "500px", scroller = TRUE, ordering = FALSE),
@@ -253,7 +195,7 @@ server <- function(input, output, session) {
   output$te_quadrant_table <- renderDT({ render_position_quadrant("TE") })
   
   output$lollipop_plot <- renderPlot({
-    board <- active_board()
+    board <- draft_board_master()
     req(nrow(board) > 0)
     min_pick <- max(1, input$my_pick - input$window)
     max_pick <- input$my_pick + input$window
@@ -275,7 +217,7 @@ server <- function(input, output, session) {
       scale_fill_brewer(palette = "Set2", name = "Tier") +
       expand_limits(x = max(filtered_data$vor, na.rm = TRUE) * 1.35) +
       labs(
-        title = paste0("Draft Window: Picks ", min_pick, " to ", max_pick, " (Your Pick: #", input$my_pick, ")"),
+        title = paste0("Draft Window: Picks ", min_pick, " to ", max_pick, " (Reference Pick: #", input$my_pick, ")"),
         subtitle = paste0("Scoring: ", input$scoring_format, " | Grouped by Tiers (Value Over Replacement)"),
         x = "Value Over Replacement (VOR)",
         y = NULL
@@ -295,38 +237,123 @@ server <- function(input, output, session) {
       )
   })
   
+  # 1. Enhanced Volatility & Expert Spread Plot
   output$volatility_plot <- renderPlot({
     req(length(input$compare_players) >= 2)
     comparison_data <- combined_projections_clean %>% filter(player %in% input$compare_players)
     if(nrow(comparison_data) == 0) return()
-    source_breakdown <- calc_league_pts(comparison_data, league_rules()) %>% select(player, pos, team, data_src, total_pts)
     
-    ggplot(source_breakdown, aes(x = total_pts, y = reorder(player, total_pts, FUN = median), color = data_src)) +
-      geom_point(size = 4.5, alpha = 0.85, position = position_jitter(height = 0.1, width = 0)) +
-      geom_text(aes(label = data_src), vjust = -1.3, size = 3.5, show.legend = FALSE) +
+    source_breakdown <- calc_league_pts(comparison_data, league_rules()) %>% 
+      select(player, pos, team, data_src, total_pts)
+    
+    ggplot(source_breakdown, aes(x = total_pts, y = reorder(player, total_pts, FUN = median))) +
+      geom_boxplot(aes(fill = pos), alpha = 0.3, outlier.shape = NA, width = 0.4) +
+      geom_point(aes(color = data_src), size = 4, alpha = 0.9, position = position_jitter(height = 0.1, width = 0)) +
+      scale_fill_brewer(palette = "Pastel1", guide = "none") +
+      scale_color_brewer(palette = "Set1", name = "Data Source") +
       labs(
-        title = "Multi-Player Volatility & Range of Outcomes",
-        subtitle = paste0("Scoring: ", input$scoring_format, " | Comparing source projections across candidate targets"),
-        x = "Projected Fantasy Points (Individual Source Output)",
-        y = NULL,
-        color = "Data Source"
+        title = "Expert Consensus & Outcome Spread",
+        subtitle = paste0("Scoring: ", input$scoring_format, " | Comparing individual source projections across targets"),
+        x = "Projected Fantasy Points",
+        y = NULL
       ) +
-      theme_minimal(base_size = 12) +
+      theme_minimal(base_size = 13) +
       theme(
-        plot.title = element_text(face = "bold", size = 14),
+        plot.title = element_text(face = "bold", size = 15),
         plot.subtitle = element_text(size = 11, color = "grey40"),
-        panel.grid.major = element_blank(),  
-        panel.grid.minor = element_blank(),  
-        axis.text.y = element_text(size = 14, face = "bold", color = "grey20"), 
-        axis.text.x = element_text(size = 13, face = "bold", color = "grey20"),
+        panel.grid.major.y = element_blank(),
+        axis.text.y = element_text(size = 13, face = "bold", color = "grey20"),
+        axis.text.x = element_text(size = 12, face = "bold", color = "grey20"),
         legend.position = "right"
-      ) +
-      expand_limits(x = c(
-        min(source_breakdown$total_pts, na.rm = TRUE) * 0.9,
-        max(source_breakdown$total_pts, na.rm = TRUE) * 1.15
-      ))
+      )
   })
   
+  # 2. Statistical Summary Card Table
+  output$volatility_summary_card <- renderTable({
+    req(length(input$compare_players) >= 2)
+    
+    comparison_data <- combined_projections_clean %>% filter(player %in% input$compare_players)
+    if(nrow(comparison_data) == 0) return()
+    
+    calc_league_pts(comparison_data, league_rules()) %>%
+      group_by(player, pos, team) %>%
+      summarise(
+        Sources     = n(),
+        Consensus   = round(mean(total_pts, na.rm = TRUE), 1),
+        Floor       = round(min(total_pts, na.rm = TRUE), 1),
+        Ceiling     = round(max(total_pts, na.rm = TRUE), 1),
+        Spread      = round(Ceiling - Floor, 1),
+        Std_Dev     = round(sd(total_pts, na.rm = TRUE), 1),
+        .groups     = "drop"
+      ) %>%
+      arrange(desc(Consensus)) %>%
+      rename(
+        Player = player,
+        Pos = pos,
+        Team = team,
+        "Expert Count" = Sources,
+        "Mean Proj" = Consensus,
+        "Floor (Min)" = Floor,
+        "Ceiling (Max)" = Ceiling,
+        "Spread" = Spread,
+        "Std Dev" = Std_Dev
+      )
+  }, striped = TRUE, bordered = TRUE, spacing = "s", align = "c")
+  
+  # 3. Stat-Category Breakdown Stacked Bar Chart
+  output$stat_breakdown_plot <- renderPlot({
+    req(length(input$compare_players) >= 2)
+    
+    rules <- league_rules()
+    
+    stat_data <- weighted_projections %>%
+      filter(player %in% input$compare_players) %>%
+      mutate(
+        Pass_Yds_Pts  = coalesce(pass_yds, 0) * rules$pass_yds,
+        Pass_TD_Pts   = coalesce(pass_tds, 0) * rules$pass_tds,
+        Pass_Int_Pts  = coalesce(pass_int, 0) * rules$pass_int,
+        Rush_Yds_Pts  = coalesce(rush_yds, 0) * rules$rush_yds,
+        Rush_TD_Pts   = coalesce(rush_tds, 0) * rules$rush_tds,
+        Rec_Pts       = coalesce(rec, 0)      * rules$rec,
+        Rec_Yds_Pts   = coalesce(rec_yds, 0)  * rules$rec_yds,
+        Rec_TD_Pts    = coalesce(rec_tds, 0)  * rules$rec_tds
+      ) %>%
+      select(player, pos, team, ends_with("_Pts")) %>%
+      pivot_longer(
+        cols = ends_with("_Pts"),
+        names_to = "stat_category",
+        values_to = "pts_generated"
+      ) %>%
+      mutate(
+        stat_category = str_remove(stat_category, "_Pts") %>% 
+          str_replace_all("_", " ") %>% 
+          tools::toTitleCase()
+      )
+    
+    if(nrow(stat_data) == 0) return()
+    
+    ggplot(stat_data, aes(x = reorder(player, pts_generated, sum), y = pts_generated, fill = stat_category)) +
+      geom_col(width = 0.6, alpha = 0.9) +
+      coord_flip() +
+      scale_fill_brewer(palette = "Set2", name = "Point Source") +
+      labs(
+        title = "Where Do The Points Come From?",
+        subtitle = paste0("Scoring: ", input$scoring_format, " | Breakdown of fantasy point generation by category"),
+        x = NULL,
+        y = "Fantasy Points Generated"
+      ) +
+      theme_minimal(base_size = 13) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15),
+        plot.subtitle = element_text(size = 11, color = "grey40"),
+        panel.grid.major.y = element_blank(),
+        axis.text.y = element_text(size = 13, face = "bold", color = "grey20"),
+        axis.text.x = element_text(size = 12, face = "bold", color = "grey20"),
+        legend.position = "bottom"
+      )
+  })
+  
+  # 4. Source-by-Source Pivot Table
   output$volatility_table <- renderTable({
     req(length(input$compare_players) >= 2)
     comparison_data <- combined_projections_clean %>% filter(player %in% input$compare_players)
@@ -337,33 +364,11 @@ server <- function(input, output, session) {
       mutate(across(where(is.numeric), ~ round(.x, 1)))
   }, striped = TRUE, bordered = TRUE, spacing = "s")
   
-  output$roster_summary <- renderText({
-    if(length(rv$my_roster) == 0) return("Your roster is currently empty.")
-    roster_df <- weighted_league_pts() %>% inner_join(espn_pts(), by = c("player", "pos", "team")) %>% filter(player %in% rv$my_roster)
-    total_proj <- sum(roster_df$weighted_pts, na.rm = TRUE)
-    pos_counts <- table(roster_df$pos)
-    pos_breakdown <- paste(names(pos_counts), pos_counts, sep = ": ", collapse = " | ")
-    
-    paste0("Players Drafted: ", nrow(roster_df), 
-           " | Total Projected Points: ", round(total_proj, 1), 
-           "\nPosition Breakdown: ", pos_breakdown)
-  })
-  
-  output$my_roster_table <- renderTable({
-    req(length(rv$my_roster) > 0)
-    weighted_league_pts() %>%
-      inner_join(espn_pts(), by = c("player", "pos", "team")) %>%
-      filter(player %in% rv$my_roster) %>%
-      mutate(pts_diff = round(weighted_pts - espn_pts, 1)) %>%
-      select(player, pos, team, weighted_pts, espn_pts, pts_diff) %>%
-      arrange(desc(weighted_pts))
-  }, striped = TRUE, bordered = TRUE, spacing = "s")
-  
   output$draft_board_table <- renderDT({
     datatable(
-      active_board() %>% select(model_adp, tier, player, pos, team, weighted_pts, vor, espn_pts, pts_diff, sources_count),
+      draft_board_master() %>% select(model_adp, tier, player, pos, team, weighted_pts, vor, espn_pts, pts_diff, sources_count),
       options = list(pageLength = 15),
-      selection = 'multiple'
+      selection = 'none'
     )
   })
 }

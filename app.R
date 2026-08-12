@@ -31,7 +31,7 @@ calc_league_pts <- function(df, rules) {
 }
 
 ui <- fluidPage(
-  titlePanel("🏈 Fantasy Player Comparison Hub"),
+  titlePanel("🏈 Fantasy Player Comparison & Draft Hub"),
   
   sidebarLayout(
     sidebarPanel(
@@ -53,36 +53,25 @@ ui <- fluidPage(
                      choices = NULL, multiple = TRUE),
       hr(),
       h4("Draft Window Settings"),
-      numericInput("my_pick", "Reference Pick #:", value = 14, min = 1, max = 300),
-      sliderInput("window", "Draft Window (+/- Picks):", value = 15, min = 5, max = 30)
+      numericInput("my_pick", "Reference Rank/Tier #:", value = 14, min = 1, max = 150),
+      sliderInput("window_half_size", "Window Span (+/- Players):", min = 2, max = 15, value = 5, step = 1)
     ),
     
     mainPanel(
       width = 9,
       tabsetPanel(
-        tabPanel("Tier Quadrants",
-                 fluidRow(
-                   column(6, h3("Quarterbacks (QB)"), DTOutput("qb_quadrant_table")),
-                   column(6, h3("Running Backs (RB)"), DTOutput("rb_quadrant_table"))
-                 ),
-                 br(),
-                 fluidRow(
-                   column(6, h3("Wide Receivers (WR)"), DTOutput("wr_quadrant_table")),
-                   column(6, h3("Tight Ends (TE)"), DTOutput("te_quadrant_table"))
-                 )
-        ),
-        tabPanel("Target Window (Bars)", 
-                 plotOutput("lollipop_plot", height = "650px")),
-        tabPanel("Player Comparison Hub", 
-                 plotOutput("volatility_plot", height = "450px"),
+        tabPanel("Active Decision Hub", 
+                 h4("Expert Consensus & Outcome Spread"),
+                 p("Visualizing individual expert source projections and outcome volatility for selected targets."),
+                 plotOutput("volatility_plot", height = "380px"),
                  hr(),
-                 h4("Statistical Range & Expert Consensus"),
+                 h4("Statistical Tale of the Tape"),
                  tableOutput("volatility_summary_card"),
                  hr(),
-                 plotOutput("stat_breakdown_plot", height = "450px"),
-                 br(),
-                 h4("Source-by-Source Projection Breakdown"),
-                 tableOutput("volatility_table")),
+                 h4("Draft Window (Reaches & Values)"),
+                 p("Showing a customizable window of players preceding and following your reference rank among your selected positions."),
+                 DTOutput("window_picks_table")
+        ),
         tabPanel("Master Player Board", 
                  h5("Complete filtered pool of players sorted by Model ADP and Value Over Replacement."),
                  br(),
@@ -143,7 +132,7 @@ server <- function(input, output, session) {
       mutate(model_adp = rank(-weighted_pts, ties.method = "min"))
   })
   
-  espn_pts <- reactive({
+  espn_projections_calc <- reactive({
     combined_projections_clean %>%
       filter(data_src == "ESPN") %>%
       calc_league_pts(league_rules()) %>%
@@ -151,13 +140,28 @@ server <- function(input, output, session) {
       select(player, pos, team, espn_pts)
   })
   
+  combined_ranking <- reactive({
+    w_pts <- weighted_league_pts()
+    espn_pts_df <- espn_projections_calc()
+    
+    w_pts %>%
+      left_join(espn_pts_df, by = c("player", "pos", "team")) %>%
+      mutate(
+        espn_pts = coalesce(espn_pts, weighted_pts)
+      ) %>%
+      group_by(pos) %>%
+      arrange(desc(espn_pts)) %>%
+      mutate(pos_adp = row_number()) %>%
+      ungroup() %>%
+      arrange(desc(weighted_pts)) %>%
+      mutate(overall_adp = row_number())
+  })
+  
   draft_board_master <- reactive({
     req(input$target_pos)
-    weighted_league_pts() %>%
-      left_join(espn_pts(), by = c("player", "pos", "team")) %>%
+    combined_ranking() %>%
       filter(pos %in% input$target_pos) %>% 
       mutate(
-        espn_pts = coalesce(espn_pts, weighted_pts),
         pts_diff = round(weighted_pts - espn_pts, 1),
         pct_diff = round(((weighted_pts - espn_pts) / espn_pts) * 100, 1)
       ) %>%
@@ -172,72 +176,56 @@ server <- function(input, output, session) {
                          server = TRUE)
   })
   
-  render_position_quadrant <- function(position_filter) {
-    weighted_league_pts() %>%
-      filter(pos == position_filter) %>%
-      select(pos_rank, player, team, weighted_pts, tier) %>%
-      datatable(
-        options = list(pageLength = 25, dom = 't', scrollY = "500px", scroller = TRUE, ordering = FALSE),
-        rownames = FALSE,
-        colnames = c("Rank", "Player", "Team", "Proj Pts", "Tier")
+  output$window_picks_table <- renderDT({
+    req(input$target_pos)
+    ranked_board <- combined_ranking() %>% filter(pos %in% input$target_pos)
+    
+    ref_val <- input$my_pick
+    span <- input$window_half_size
+    
+    # Adjusted counts: one fewer above (span - 1), one additional after (span + 2)
+    ahead_pool <- ranked_board %>% filter(overall_adp < ref_val) %>% arrange(desc(overall_adp)) %>% head(max(0, span - 1)) %>% arrange(overall_adp)
+    after_pool <- ranked_board %>% filter(overall_adp >= ref_val) %>% arrange(overall_adp) %>% head(span + 2)
+    
+    window_data <- bind_rows(ahead_pool, after_pool) %>%
+      mutate(
+        Model_Outlook = case_when(
+          weighted_pts > espn_pts + 1.0  ~ "🔥 Model Likes More",
+          weighted_pts < espn_pts - 1.0  ~ "❄️ Model Likes Less",
+          TRUE                           ~ "⚖️ Matches ESPN"
+        ),
+        "Rank" = overall_adp,
+        "Tier" = tier,
+        "Player" = player,
+        "Pos" = pos,
+        "Team" = team,
+        "Model Proj" = round(weighted_pts, 1),
+        "ESPN Proj" = round(espn_pts, 1),
+        "VOR" = round(vor, 1),
+        "Delta" = round(weighted_pts - espn_pts, 1)
+      ) %>%
+      select(Rank, Tier, Player, Pos, Team, VOR, "Model Proj", "ESPN Proj", Delta, Model_Outlook)
+    
+    datatable(
+      window_data,
+      options = list(pageLength = 25, dom = 't', ordering = FALSE),
+      rownames = FALSE
+    ) %>%
+      formatStyle(
+        'VOR',
+        background = styleColorBar(c(0, max(window_data$VOR, na.rm = TRUE)), '#d4edda'),
+        fontWeight = 'bold'
       ) %>%
       formatStyle(
-        'tier',
-        backgroundColor = styleInterval(c(1, 2, 3, 4, 5, 6, 7, 8, 9), c('#ffff00', '#000080', '#00ff00', '#800000', '#00ffff', '#4b0082', '#ff8c00', '#111111', '#ff1493', '#556b2f')),
-        color = styleInterval(c(1, 2, 3, 4, 5, 6, 7, 8, 9), c('#000000', '#ffffff', '#000000', '#ffffff', '#000000', '#ffffff', '#000000', '#ffffff', '#000000', '#ffffff')),
+        'Model_Outlook',
+        backgroundColor = styleEqual(
+          c("🔥 Model Likes More", "❄️ Model Likes Less", "⚖️ Matches ESPN"),
+          c('#e6f4ea', '#fce8e6', '#f1f3f4')
+        ),
         fontWeight = 'bold'
-      )
-  }
-  
-  output$qb_quadrant_table <- renderDT({ render_position_quadrant("QB") })
-  output$rb_quadrant_table <- renderDT({ render_position_quadrant("RB") })
-  output$wr_quadrant_table <- renderDT({ render_position_quadrant("WR") })
-  output$te_quadrant_table <- renderDT({ render_position_quadrant("TE") })
-  
-  output$lollipop_plot <- renderPlot({
-    board <- draft_board_master()
-    req(nrow(board) > 0)
-    min_pick <- max(1, input$my_pick - input$window)
-    max_pick <- input$my_pick + input$window
-    
-    filtered_data <- board %>% filter(model_adp >= min_pick, model_adp <= max_pick)
-    if(nrow(filtered_data) == 0) {
-      plot.new()
-      text(0.5, 0.5, "No players available in this window matching your position filters!", cex = 1.2)
-      return()
-    }
-    
-    filtered_data <- filtered_data %>%
-      mutate(display_label = paste0("#", model_adp, " - Tier ", tier, " | ", player, " (", pos, ", ", team, ")"))
-    
-    ggplot(filtered_data, aes(x = vor, y = reorder(display_label, vor))) +
-      geom_col(aes(fill = factor(tier)), width = 0.65, alpha = 0.9) +
-      geom_text(aes(label = sprintf("%.1f VOR (Proj: %.1f)", vor, weighted_pts)), 
-                hjust = -0.05, size = 4, fontface = "bold", color = "grey20") +
-      scale_fill_brewer(palette = "Set2", name = "Tier") +
-      expand_limits(x = max(filtered_data$vor, na.rm = TRUE) * 1.35) +
-      labs(
-        title = paste0("Draft Window: Picks ", min_pick, " to ", max_pick, " (Reference Pick: #", input$my_pick, ")"),
-        subtitle = paste0("Scoring: ", input$scoring_format, " | Grouped by Tiers (Value Over Replacement)"),
-        x = "Value Over Replacement (VOR)",
-        y = NULL
-      ) +
-      theme_minimal(base_size = 13) +
-      theme(
-        plot.title = element_text(face = "bold", size = 16),
-        plot.subtitle = element_text(size = 12, color = "grey40"),
-        panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank(),
-        axis.text.y = element_text(size = 13, face = "bold", color = "grey20"),
-        axis.text.x = element_text(size = 13, face = "bold", color = "grey20"),
-        axis.title.x = element_text(size = 13, face = "bold", margin = margin(t = 10)),
-        legend.position = "bottom",
-        legend.title = element_text(size = 11, face = "bold"),
-        legend.text = element_text(size = 10)
       )
   })
   
-  # 1. Enhanced Volatility & Expert Spread Plot
   output$volatility_plot <- renderPlot({
     req(length(input$compare_players) >= 2)
     comparison_data <- combined_projections_clean %>% filter(player %in% input$compare_players)
@@ -247,13 +235,13 @@ server <- function(input, output, session) {
       select(player, pos, team, data_src, total_pts)
     
     ggplot(source_breakdown, aes(x = total_pts, y = reorder(player, total_pts, FUN = median))) +
-      geom_boxplot(aes(fill = pos), alpha = 0.3, outlier.shape = NA, width = 0.4) +
-      geom_point(aes(color = data_src), size = 4, alpha = 0.9, position = position_jitter(height = 0.1, width = 0)) +
+      geom_boxplot(aes(fill = pos), alpha = 0.25, outlier.shape = NA, width = 0.35) +
+      geom_point(aes(color = data_src), size = 4.5, alpha = 0.9, position = position_jitter(height = 0.1, width = 0)) +
       scale_fill_brewer(palette = "Pastel1", guide = "none") +
       scale_color_brewer(palette = "Set1", name = "Data Source") +
       labs(
-        title = "Expert Consensus & Outcome Spread",
-        subtitle = paste0("Scoring: ", input$scoring_format, " | Comparing individual source projections across targets"),
+        title = "Outcome Range Across Expert Platforms",
+        subtitle = paste0("Scoring: ", input$scoring_format, " | Higher spread indicates lower expert consensus"),
         x = "Projected Fantasy Points",
         y = NULL
       ) +
@@ -268,7 +256,6 @@ server <- function(input, output, session) {
       )
   })
   
-  # 2. Statistical Summary Card Table
   output$volatility_summary_card <- renderTable({
     req(length(input$compare_players) >= 2)
     
@@ -291,78 +278,14 @@ server <- function(input, output, session) {
         Player = player,
         Pos = pos,
         Team = team,
-        "Expert Count" = Sources,
+        "Sources Count" = Sources,
         "Mean Proj" = Consensus,
-        "Floor (Min)" = Floor,
-        "Ceiling (Max)" = Ceiling,
-        "Spread" = Spread,
+        "Floor" = Floor,
+        "Ceiling" = Ceiling,
+        "Spread (Ceiling - Floor)" = Spread,
         "Std Dev" = Std_Dev
       )
-  }, striped = TRUE, bordered = TRUE, spacing = "s", align = "c")
-  
-  # 3. Stat-Category Breakdown Stacked Bar Chart
-  output$stat_breakdown_plot <- renderPlot({
-    req(length(input$compare_players) >= 2)
-    
-    rules <- league_rules()
-    
-    stat_data <- weighted_projections %>%
-      filter(player %in% input$compare_players) %>%
-      mutate(
-        Pass_Yds_Pts  = coalesce(pass_yds, 0) * rules$pass_yds,
-        Pass_TD_Pts   = coalesce(pass_tds, 0) * rules$pass_tds,
-        Pass_Int_Pts  = coalesce(pass_int, 0) * rules$pass_int,
-        Rush_Yds_Pts  = coalesce(rush_yds, 0) * rules$rush_yds,
-        Rush_TD_Pts   = coalesce(rush_tds, 0) * rules$rush_tds,
-        Rec_Pts       = coalesce(rec, 0)      * rules$rec,
-        Rec_Yds_Pts   = coalesce(rec_yds, 0)  * rules$rec_yds,
-        Rec_TD_Pts    = coalesce(rec_tds, 0)  * rules$rec_tds
-      ) %>%
-      select(player, pos, team, ends_with("_Pts")) %>%
-      pivot_longer(
-        cols = ends_with("_Pts"),
-        names_to = "stat_category",
-        values_to = "pts_generated"
-      ) %>%
-      mutate(
-        stat_category = str_remove(stat_category, "_Pts") %>% 
-          str_replace_all("_", " ") %>% 
-          tools::toTitleCase()
-      )
-    
-    if(nrow(stat_data) == 0) return()
-    
-    ggplot(stat_data, aes(x = reorder(player, pts_generated, sum), y = pts_generated, fill = stat_category)) +
-      geom_col(width = 0.6, alpha = 0.9) +
-      coord_flip() +
-      scale_fill_brewer(palette = "Set2", name = "Point Source") +
-      labs(
-        title = "Where Do The Points Come From?",
-        subtitle = paste0("Scoring: ", input$scoring_format, " | Breakdown of fantasy point generation by category"),
-        x = NULL,
-        y = "Fantasy Points Generated"
-      ) +
-      theme_minimal(base_size = 13) +
-      theme(
-        plot.title = element_text(face = "bold", size = 15),
-        plot.subtitle = element_text(size = 11, color = "grey40"),
-        panel.grid.major.y = element_blank(),
-        axis.text.y = element_text(size = 13, face = "bold", color = "grey20"),
-        axis.text.x = element_text(size = 12, face = "bold", color = "grey20"),
-        legend.position = "bottom"
-      )
-  })
-  
-  # 4. Source-by-Source Pivot Table
-  output$volatility_table <- renderTable({
-    req(length(input$compare_players) >= 2)
-    comparison_data <- combined_projections_clean %>% filter(player %in% input$compare_players)
-    if(nrow(comparison_data) == 0) return()
-    calc_league_pts(comparison_data, league_rules()) %>%
-      select(player, pos, team, data_src, total_pts) %>%
-      pivot_wider(names_from = data_src, values_from = total_pts) %>%
-      mutate(across(where(is.numeric), ~ round(.x, 1)))
-  }, striped = TRUE, bordered = TRUE, spacing = "s")
+  }, striped = TRUE, bordered = TRUE, spacing = "m", align = "c")
   
   output$draft_board_table <- renderDT({
     datatable(

@@ -300,6 +300,44 @@ plot_list <- lapply(positions_to_plot, function(p) {
     )
 })
 
+# 1. Load the Sharp Football Full-Season SoS Data (1 = Easiest)
+sharp_sos <- tibble(
+  team = c("PHI", "MIN", "SEA", "DET", "LAR", "ATL", "LAC", "CLE", "NYG", "MIA", 
+           "DEN", "NYJ", "BUF", "CIN", "KC", "JAX", "GB", "NO", "TEN", "IND", 
+           "HOU", "ARI", "DAL", "BAL", "SF", "LV", "TB", "NE", "WAS", "PIT", "CHI", "CAR"),
+  sharp_pass_rank = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32)
+)
+
+sharp_rush_sos <- tibble(
+  team = c("DET", "NO", "SEA", "LAR", "MIN", "TB", "PHI", "GB", "WAS", "MIA", 
+           "ATL", "HOU", "BAL", "CHI", "NYJ", "DAL", "NYG", "IND", "JAX", "SF", 
+           "CLE", "KC", "NE", "TEN", "DEN", "ARI", "CAR", "PIT", "BUF", "CIN", "LV", "LAC"),
+  sharp_rush_rank = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32)
+)
+
+# 2. Extract and format your Yahoo/FFToolbox dataset from your earlier structure
+# (Note: Yahoo's original table had numbers where lower usually meant harder or vice versa. 
+# We align them here so 1 is Easiest / 32 is Hardest for direct comparison).
+yahoo_sos_raw <- tibble(
+  team = c("ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE", "DAL", "DEN", 
+           "DET", "GB", "HOU", "IND", "JAX", "KC", "LV", "LAC", "LAR", "MIA", 
+           "MIN", "NE", "NO", "NYG", "NYJ", "PHI", "PIT", "SF", "SEA", "TB", "TEN", "WAS"),
+  yahoo_qb = c(26, 12, 14, 24, 27, 31, 5, 2, 16, 2, 1, 15, 9, 8, 4, 30, 32, 23, 17, 25, 6, 19, 10, 7, 20, 1, 28, 29, 13, 22, 3, 18),
+  yahoo_rb = c(29, 21, 12, 31, 32, 28, 27, 10, 9, 12, 11, 17, 15, 7, 14, 20, 30, 18, 4, 19, 13, 26, 3, 11, 25, 1, 23, 16, 5, 24, 8, 6)
+)
+
+# 3. Merge into a unified Strength of Schedule Master Table
+sos_master <- sharp_sos %>%
+  left_join(sharp_rush_sos, by = "team") %>%
+  left_join(yahoo_sos_raw, by = "team") %>%
+  mutate(
+    # Composite Passing Rank (blending Sharp projections + Yahoo historical)
+    composite_pass_rank = round((sharp_pass_rank + yahoo_qb) / 2, 1),
+    # Composite Rushing Rank (blending Sharp projections + Yahoo historical)
+    composite_rush_rank = round((sharp_rush_rank + yahoo_rb) / 2, 1)
+  ) %>%
+  arrange(composite_pass_rank)
+
 # ==========================================
 # 7. SAVE TO APP DATA FILE
 # ==========================================

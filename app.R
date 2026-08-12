@@ -7,6 +7,17 @@ library(stringr)
 
 load("app_data.RData")
 
+# Helper function to convert numeric SoS into categorical labels
+get_sos_label <- function(sos_val) {
+  case_when(
+    sos_val >= 4.5 ~ "Strong",
+    sos_val >= 3.5 ~ "Favorable",
+    sos_val >= 2.5 ~ "Neutral",
+    sos_val >= 1.5 ~ "Unfavorable",
+    TRUE           ~ "Weak"
+  )
+}
+
 calc_league_pts <- function(df, rules) {
   df %>%
     mutate(
@@ -23,12 +34,15 @@ calc_league_pts <- function(df, rules) {
         (pass_int_c * rules$pass_int) +
         (rush_yds_c * rules$rush_yds) +
         (rush_tds_c * rules$rush_tds) +
-        (rec_c      * rules$rec)     +
+        (rec_c     * rules$rec)     +
         (rec_yds_c  * rules$rec_yds) +
         (rec_tds_c  * rules$rec_tds)
     ) %>%
     select(-ends_with("_c"))
 }
+
+# Extract unique sorted teams for the filter input
+all_teams <- sort(unique(na.omit(weighted_projections$team)))
 
 ui <- fluidPage(
   titlePanel("🏈 Fantasy Player Comparison & Draft Hub"),
@@ -47,6 +61,10 @@ ui <- fluidPage(
       checkboxGroupInput("target_pos", "Positions to Show:",
                          choices = c("QB", "RB", "WR", "TE"),
                          selected = c("RB", "WR", "TE")),
+      br(),
+      selectizeInput("target_teams", "Filter Teams (Leave blank for all):",
+                     choices = all_teams, multiple = TRUE,
+                     options = list(placeholder = 'All Teams')),
       hr(),
       h4("Compare Specific Players"),
       selectizeInput("compare_players", "Select 2+ Players to Compare:",
@@ -64,9 +82,6 @@ ui <- fluidPage(
                  h4("Expert Consensus & Outcome Spread"),
                  p("Visualizing individual expert source projections and outcome volatility for selected targets."),
                  plotOutput("volatility_plot", height = "380px"),
-                 hr(),
-                 h4("Statistical Tale of the Tape"),
-                 tableOutput("volatility_summary_card"),
                  hr(),
                  h4("Draft Window (Reaches & Values)"),
                  p("Showing a customizable window of players preceding and following your reference rank among your selected positions."),
@@ -98,7 +113,7 @@ server <- function(input, output, session) {
   
   weighted_league_pts <- reactive({
     weighted_projections %>%
-      select(-any_of(c("weighted_pts", "vor", "tier", "model_adp", "pos_rank"))) %>%
+      select(-any_of(c("weighted_pts", "vor", "model_adp", "pos_rank"))) %>%
       calc_league_pts(league_rules()) %>%
       rename(weighted_pts = total_pts) %>%
       filter(pos %in% c("QB", "RB", "WR", "TE")) %>%
@@ -106,14 +121,6 @@ server <- function(input, output, session) {
       arrange(desc(weighted_pts)) %>%
       mutate(pos_rank = row_number()) %>%
       ungroup() %>%
-      mutate(
-        tier = case_when(
-          pos == "WR" ~ case_when(pos_rank <= 2 ~ 1, pos_rank <= 4 ~ 2, pos_rank <= 8 ~ 3, pos_rank <= 13 ~ 4, pos_rank <= 19 ~ 5, pos_rank <= 27 ~ 6, pos_rank <= 36 ~ 7, pos_rank <= 48 ~ 8, TRUE ~ 9),
-          pos == "RB" ~ case_when(pos_rank <= 2 ~ 1, pos_rank <= 4 ~ 2, pos_rank <= 8 ~ 3, pos_rank <= 11 ~ 4, pos_rank <= 17 ~ 5, pos_rank <= 23 ~ 6, pos_rank <= 30 ~ 7, pos_rank <= 36 ~ 8, pos_rank <= 44 ~ 9, TRUE ~ 10),
-          pos == "QB" ~ case_when(pos_rank <= 1 ~ 1, pos_rank <= 5 ~ 2, pos_rank <= 12 ~ 3, pos_rank <= 16 ~ 4, pos_rank <= 19 ~ 5, TRUE ~ 6),
-          pos == "TE" ~ case_when(pos_rank <= 1 ~ 1, pos_rank <= 2 ~ 2, pos_rank <= 4 ~ 3, pos_rank <= 8 ~ 4, pos_rank <= 15 ~ 5, TRUE ~ 6)
-        )
-      ) %>%
       left_join(
         tibble(pos = c("QB", "RB", "WR", "TE"), rep_rank = c(16, 28, 32, 12)),
         by = "pos"
@@ -149,8 +156,6 @@ server <- function(input, output, session) {
       mutate(
         espn_pts = coalesce(espn_pts, weighted_pts)
       ) %>%
-      # Calculate raw delta from ESPN, then subtract the positional mean delta 
-      # dynamically to eliminate systemic platform inflation/deflation biases.
       mutate(raw_delta = weighted_pts - espn_pts) %>%
       group_by(pos) %>%
       mutate(
@@ -167,16 +172,24 @@ server <- function(input, output, session) {
       mutate(overall_adp = row_number())
   })
   
-  draft_board_master <- reactive({
+  filtered_ranking <- reactive({
     req(input$target_pos)
-    combined_ranking() %>%
-      filter(pos %in% input$target_pos) %>% 
+    df <- combined_ranking() %>% filter(pos %in% input$target_pos)
+    if (!is.null(input$target_teams) && length(input$target_teams) > 0) {
+      df <- df %>% filter(team %in% input$target_teams)
+    }
+    df
+  })
+  
+  draft_board_master <- reactive({
+    filtered_ranking() %>%
       mutate(
         pts_diff = round(weighted_pts - espn_pts, 1),
-        pct_diff = round(((weighted_pts - espn_pts) / espn_pts) * 100, 1)
+        pct_diff = round(((weighted_pts - espn_pts) / espn_pts) * 100, 1),
+        SoS = get_sos_label(sos)
       ) %>%
       arrange(model_adp) %>%
-      select(model_adp, tier, player, pos, team, weighted_pts, vor, espn_pts, pts_diff, sources_count)
+      select(model_adp, player, pos, team, weighted_pts, vor, SoS, espn_pts, pts_diff, sources_count)
   })
   
   observe({
@@ -187,8 +200,7 @@ server <- function(input, output, session) {
   })
   
   output$window_picks_table <- renderDT({
-    req(input$target_pos)
-    ranked_board <- combined_ranking() %>% filter(pos %in% input$target_pos)
+    ranked_board <- filtered_ranking()
     
     ref_val <- input$my_pick
     span <- input$window_half_size
@@ -198,8 +210,6 @@ server <- function(input, output, session) {
     
     window_data <- bind_rows(ahead_pool, after_pool) %>%
       mutate(
-        # Dynamic thresholding based on the positional standard deviation of deltas.
-        # This replaces hardcoded static point gaps.
         dyn_threshold = pmax(1.0, 0.35 * coalesce(pos_sd_delta, 2.0)),
         Model_Outlook = case_when(
           net_delta > dyn_threshold   ~ "🔥 Model Likes More",
@@ -207,16 +217,16 @@ server <- function(input, output, session) {
           TRUE                        ~ "⚖️ Matches ESPN"
         ),
         "Rank" = overall_adp,
-        "Tier" = tier,
         "Player" = player,
         "Pos" = pos,
         "Team" = team,
         "Model Proj" = round(weighted_pts, 1),
         "ESPN Proj" = round(espn_pts, 1),
         "VOR" = round(vor, 1),
+        "SoS" = get_sos_label(sos),
         "Delta" = round(weighted_pts - espn_pts, 1)
       ) %>%
-      select(Rank, Tier, Player, Pos, Team, VOR, "Model Proj", "ESPN Proj", Delta, Model_Outlook)
+      select(Rank, Player, Pos, Team, VOR, SoS, "Model Proj", "ESPN Proj", Delta, Model_Outlook)
     
     datatable(
       window_data,
@@ -226,6 +236,14 @@ server <- function(input, output, session) {
       formatStyle(
         'VOR',
         background = styleColorBar(c(0, max(window_data$VOR, na.rm = TRUE)), '#d4edda'),
+        fontWeight = 'bold'
+      ) %>%
+      formatStyle(
+        'SoS',
+        backgroundColor = styleEqual(
+          c("Weak", "Unfavorable", "Neutral", "Favorable", "Strong"),
+          c('#f8d7da', '#ffe8cc', '#f1f3f5', '#d3f9d8', '#8ce99a')
+        ),
         fontWeight = 'bold'
       ) %>%
       formatStyle(
@@ -268,43 +286,22 @@ server <- function(input, output, session) {
       )
   })
   
-  output$volatility_summary_card <- renderTable({
-    req(length(input$compare_players) >= 2)
-    
-    comparison_data <- combined_projections_clean %>% filter(player %in% input$compare_players)
-    if(nrow(comparison_data) == 0) return()
-    
-    calc_league_pts(comparison_data, league_rules()) %>%
-      group_by(player, pos, team) %>%
-      summarise(
-        Sources     = n(),
-        Consensus   = round(mean(total_pts, na.rm = TRUE), 1),
-        Floor       = round(min(total_pts, na.rm = TRUE), 1),
-        Ceiling     = round(max(total_pts, na.rm = TRUE), 1),
-        Spread      = round(Ceiling - Floor, 1),
-        Std_Dev     = round(sd(total_pts, na.rm = TRUE), 1),
-        .groups     = "drop"
-      ) %>%
-      arrange(desc(Consensus)) %>%
-      rename(
-        Player = player,
-        Pos = pos,
-        Team = team,
-        "Sources Count" = Sources,
-        "Mean Proj" = Consensus,
-        "Floor" = Floor,
-        "Ceiling" = Ceiling,
-        "Spread (Ceiling - Floor)" = Spread,
-        "Std Dev" = Std_Dev
-      )
-  }, striped = TRUE, bordered = TRUE, spacing = "m", align = "c")
-  
   output$draft_board_table <- renderDT({
+    board_df <- draft_board_master()
+    
     datatable(
-      draft_board_master() %>% select(model_adp, tier, player, pos, team, weighted_pts, vor, espn_pts, pts_diff, sources_count),
+      board_df,
       options = list(pageLength = 15),
       selection = 'none'
-    )
+    ) %>%
+      formatStyle(
+        'SoS',
+        backgroundColor = styleEqual(
+          c("Weak", "Unfavorable", "Neutral", "Favorable", "Strong"),
+          c('#f8d7da', '#ffe8cc', '#f1f3f5', '#d3f9d8', '#8ce99a')
+        ),
+        fontWeight = 'bold'
+      )
   })
 }
 

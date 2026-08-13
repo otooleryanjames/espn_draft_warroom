@@ -57,6 +57,12 @@ ui <- fluidPage(
                                "Standard (0.0 Rec)" = "Standard"),
                    selected = "PPR"),
       hr(),
+      h4("Replacement Baselines (VOR)"),
+      numericInput("rep_qb", "QB Baseline Rank:", value = 16, min = 1, max = 50),
+      numericInput("rep_rb", "RB Baseline Rank:", value = 30, min = 1, max = 70),
+      numericInput("rep_wr", "WR Baseline Rank:", value = 46, min = 1, max = 80),
+      numericInput("rep_te", "TE Baseline Rank:", value = 12, min = 1, max = 30),
+      hr(),
       h4("Player Filtering"),
       checkboxGroupInput("target_pos", "Positions to Show:",
                          choices = c("QB", "RB", "WR", "TE"),
@@ -111,7 +117,16 @@ server <- function(input, output, session) {
     )
   })
   
+  rep_ranks_reactive <- reactive({
+    tibble(
+      pos = c("QB", "RB", "WR", "TE"),
+      rep_rank = c(input$rep_qb, input$rep_rb, input$rep_wr, input$rep_te)
+    )
+  })
+  
   weighted_league_pts <- reactive({
+    rep_df <- rep_ranks_reactive()
+    
     weighted_projections %>%
       select(-any_of(c("weighted_pts", "vor", "model_adp", "pos_rank"))) %>%
       calc_league_pts(league_rules()) %>%
@@ -121,10 +136,7 @@ server <- function(input, output, session) {
       arrange(desc(weighted_pts)) %>%
       mutate(pos_rank = row_number()) %>%
       ungroup() %>%
-      left_join(
-        tibble(pos = c("QB", "RB", "WR", "TE"), rep_rank = c(16, 28, 32, 12)),
-        by = "pos"
-      ) %>%
+      left_join(rep_df, by = "pos") %>%
       group_by(pos) %>%
       mutate(
         baseline_pts = if_else(

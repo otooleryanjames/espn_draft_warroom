@@ -57,11 +57,23 @@ ui <- fluidPage(
                                "Standard (0.0 Rec)" = "Standard"),
                    selected = "PPR"),
       hr(),
-      h4("Replacement Baselines (VOR)"),
-      numericInput("rep_qb", "QB Baseline Rank:", value = 16, min = 1, max = 50),
-      numericInput("rep_rb", "RB Baseline Rank:", value = 30, min = 1, max = 70),
-      numericInput("rep_wr", "WR Baseline Rank:", value = 46, min = 1, max = 80),
-      numericInput("rep_te", "TE Baseline Rank:", value = 12, min = 1, max = 30),
+      
+      # Toggle to show/hide VOR baseline settings side panel
+      checkboxInput("show_vor_baselines", "Customize VOR Baselines", value = FALSE),
+      
+      # Conditional panel that collapses/hides based on the checkbox toggle
+      conditionalPanel(
+        condition = "input.show_vor_baselines == true",
+        wellPanel(
+          style = "background: #f8f9fa; padding: 10px;",
+          h5("Replacement Baselines (VOR)"),
+          numericInput("rep_qb", "QB Baseline Rank:", value = 16, min = 1, max = 50),
+          numericInput("rep_rb", "RB Baseline Rank:", value = 30, min = 1, max = 70),
+          numericInput("rep_wr", "WR Baseline Rank:", value = 46, min = 1, max = 80),
+          numericInput("rep_te", "TE Baseline Rank:", value = 12, min = 1, max = 30)
+        )
+      ),
+      
       hr(),
       h4("Player Filtering"),
       checkboxGroupInput("target_pos", "Positions to Show:",
@@ -247,7 +259,7 @@ server <- function(input, output, session) {
     ) %>%
       formatStyle(
         'VOR',
-        background = styleColorBar(c(0, max(window_data$VOR, na.rm = TRUE)), '#d4edda'),
+        background = styleColorBar(range(window_data$VOR, na.rm = TRUE), '#d4edda'),
         fontWeight = 'bold'
       ) %>%
       formatStyle(

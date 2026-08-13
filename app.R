@@ -14,7 +14,7 @@ get_sos_label <- function(sos_val) {
     sos_val >= 3.5 ~ "Favorable",
     sos_val >= 2.5 ~ "Neutral",
     sos_val >= 1.5 ~ "Unfavorable",
-    TRUE            ~ "Weak"
+    TRUE           ~ "Weak"
   )
 }
 
@@ -83,12 +83,15 @@ ui <- fluidPage(
                      options = list(placeholder = 'All Teams')),
       hr(),
       h4("Compare Specific Players"),
-      selectizeInput("compare_players", "Select 2+ Players to Compare:",
+      selectizeInput("compare_players", "Select Players to Focus:",
                      choices = NULL, multiple = TRUE),
+      
       hr(),
-      h4("Draft Window Settings"),
-      numericInput("my_pick", "Reference Rank/Tier #:", value = 14, min = 1, max = 150),
-      sliderInput("window_half_size", "Window Span (+/- Players):", min = 2, max = 15, value = 5, step = 1)
+      h4("My Roster"),
+      wellPanel(
+        style = "background: #f8f9fa; padding: 10px;",
+        uiOutput("my_roster_summary")
+      )
     ),
     
     mainPanel(
@@ -99,8 +102,8 @@ ui <- fluidPage(
                  p("Visualizing individual expert source projections and outcome volatility for selected targets."),
                  plotOutput("volatility_plot", height = "380px"),
                  hr(),
-                 h4("Draft Window (Reaches & Values)"),
-                 p("Showing a customizable window of players preceding and following your reference rank among your selected positions."),
+                 h4("Player Comparison Focus"),
+                 p("Showing detailed metrics for your selected comparison players."),
                  DTOutput("window_picks_table")
         ),
         tabPanel("Master Player Board", 
@@ -113,6 +116,9 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
+  
+  # Reactive value to keep track of drafted players
+  my_drafted_players <- reactiveVal(character(0))
   
   league_rules <- reactive({
     rec_pts <- switch(input$scoring_format,
@@ -222,7 +228,6 @@ server <- function(input, output, session) {
         SoS = get_sos_label(sos),
         Tier = paste("Tier", tier_group)
       ) %>%
-      # CHANGE HERE: Sort by tier and value instead of locking it strictly to one position at a time
       arrange(tier_group, desc(vor)) %>%
       select(Tier, player, pos, team, weighted_pts, vor, SoS, espn_pts) %>%
       mutate(
@@ -239,72 +244,231 @@ server <- function(input, output, session) {
                          server = TRUE)
   })
   
+  # Handle Draft / Undo Button clicks from the focus table
+  observeEvent(input$draft_player_btn, {
+    p_name <- input$draft_player_btn
+    current_drafted <- my_drafted_players()
+    if (!(p_name %in% current_drafted)) {
+      my_drafted_players(c(current_drafted, p_name))
+    }
+  })
+  
+  observeEvent(input$undraft_player_btn, {
+    p_name <- input$undraft_player_btn
+    current_drafted <- my_drafted_players()
+    my_drafted_players(setdiff(current_drafted, p_name))
+  })
+  
+  output$my_roster_summary <- renderUI({
+    drafted <- my_drafted_players()
+    
+    # Define standard starting slots shell: 1 QB, 2 RB, 2 WR, 1 TE, 1 FLEX (RB/WR/TE), 5 BENCH
+    shell_slots <- c("QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "BN", "BN", "BN", "BN", "BN")
+    
+    if (length(drafted) == 0) {
+      assigned_df <- data.frame(slot = shell_slots, player = "—", pos = "", team = "", stringsAsFactors = FALSE)
+    } else {
+      roster_df <- combined_ranking() %>%
+        filter(player %in% drafted) %>%
+        arrange(desc(weighted_pts))
+      
+      # Greedy assignment into standard lineup slots
+      filled_slots <- character(length(shell_slots))
+      assigned_players <- rep(NA_character_, length(shell_slots))
+      assigned_details <- vector("list", length(shell_slots))
+      
+      unassigned_indices <- seq_len(nrow(roster_df))
+      
+      # 1. Fill exact QB slots
+      qb_indices <- which(shell_slots == "QB")
+      for (s in qb_indices) {
+        match_idx <- which(unassigned_indices %in% which(roster_df$pos[unassigned_indices] == "QB"))
+        if (length(match_idx) > 0) {
+          p_idx <- unassigned_indices[match_idx[1]]
+          assigned_details[[s]] <- roster_df[p_idx, ]
+          unassigned_indices <- setdiff(unassigned_indices, p_idx)
+        }
+      }
+      
+      # 2. Fill exact RB slots
+      rb_indices <- which(shell_slots == "RB")
+      for (s in rb_indices) {
+        match_idx <- which(unassigned_indices %in% which(roster_df$pos[unassigned_indices] == "RB"))
+        if (length(match_idx) > 0) {
+          p_idx <- unassigned_indices[match_idx[1]]
+          assigned_details[[s]] <- roster_df[p_idx, ]
+          unassigned_indices <- setdiff(unassigned_indices, p_idx)
+        }
+      }
+      
+      # 3. Fill exact WR slots
+      wr_indices <- which(shell_slots == "WR")
+      for (s in wr_indices) {
+        match_idx <- which(unassigned_indices %in% which(roster_df$pos[unassigned_indices] == "WR"))
+        if (length(match_idx) > 0) {
+          p_idx <- unassigned_indices[match_idx[1]]
+          assigned_details[[s]] <- roster_df[p_idx, ]
+          unassigned_indices <- setdiff(unassigned_indices, p_idx)
+        }
+      }
+      
+      # 4. Fill exact TE slots
+      te_indices <- which(shell_slots == "TE")
+      for (s in te_indices) {
+        match_idx <- which(unassigned_indices %in% which(roster_df$pos[unassigned_indices] == "TE"))
+        if (length(match_idx) > 0) {
+          p_idx <- unassigned_indices[match_idx[1]]
+          assigned_details[[s]] <- roster_df[p_idx, ]
+          unassigned_indices <- setdiff(unassigned_indices, p_idx)
+        }
+      }
+      
+      # 5. Fill FLEX slots (RB/WR/TE)
+      flex_indices <- which(shell_slots == "FLEX")
+      for (s in flex_indices) {
+        match_idx <- which(unassigned_indices %in% which(roster_df$pos[unassigned_indices] %in% c("RB", "WR", "TE")))
+        if (length(match_idx) > 0) {
+          p_idx <- unassigned_indices[match_idx[1]]
+          assigned_details[[s]] <- roster_df[p_idx, ]
+          unassigned_indices <- setdiff(unassigned_indices, p_idx)
+        }
+      }
+      
+      # 6. Fill remaining into Bench (BN) slots
+      bn_indices <- which(shell_slots == "BN")
+      for (s in bn_indices) {
+        if (length(unassigned_indices) > 0) {
+          p_idx <- unassigned_indices[1]
+          assigned_details[[s]] <- roster_df[p_idx, ]
+          unassigned_indices <- unassigned_indices[-1]
+        }
+      }
+      
+      # If more players drafted than total shell slots, append extra bench slots
+      if (length(unassigned_indices) > 0) {
+        for (p_idx in unassigned_indices) {
+          shell_slots <- c(shell_slots, "BN")
+          assigned_details <- c(assigned_details, list(roster_df[p_idx, ]))
+        }
+      }
+      
+      assigned_df <- data.frame(
+        slot = shell_slots,
+        stringsAsFactors = FALSE
+      )
+      
+      assigned_df$player <- sapply(assigned_details, function(x) {
+        if (is.null(x)) "—" else x$player
+      })
+      assigned_df$pos_team <- sapply(assigned_details, function(x) {
+        if (is.null(x)) "" else paste0(" (", x$pos, " - ", x$team, ")")
+      })
+    }
+    
+    tagList(
+      p(strong(paste0("Drafted: ", length(drafted)))),
+      hr(style = "margin: 5px 0;"),
+      tags$ul(
+        style = "padding-left: 0; list-style-type: none; margin-bottom: 0;",
+        lapply(seq_len(nrow(assigned_df)), function(i) {
+          slot_name <- assigned_df$slot[i]
+          p_name <- assigned_df$player[i]
+          pt_info <- if("pos_team" %in% names(assigned_df)) assigned_df$pos_team[i] else ""
+          
+          is_empty <- (p_name == "—")
+          
+          tags$li(
+            style = "margin-bottom: 5px; font-size: 13px;",
+            span(style = "font-weight: bold; display: inline-block; width: 45px; color: #555;", paste0(slot_name, ":")),
+            span(style = if(is_empty) "color: #adb5bd; font-style: italic;" else "color: #212529;", paste0(p_name, pt_info))
+          )
+        })
+      )
+    )
+  })
+  
   output$window_picks_table <- renderDT({
-    ranked_board <- filtered_ranking()
+    if (is.null(input$compare_players) || length(input$compare_players) == 0) {
+      window_data <- combined_ranking() %>% head(0)
+    } else {
+      window_data <- combined_ranking() %>%
+        filter(player %in% input$compare_players) %>%
+        arrange(desc(weighted_pts))
+    }
     
-    ref_val <- input$my_pick
-    span <- input$window_half_size
+    drafted_set <- my_drafted_players()
     
-    ahead_pool <- ranked_board %>% filter(overall_adp < ref_val) %>% arrange(desc(overall_adp)) %>% head(max(0, span - 1)) %>% arrange(overall_adp)
-    after_pool <- ranked_board %>% filter(overall_adp >= ref_val) %>% arrange(overall_adp) %>% head(span + 2)
+    # Compute global VOR range across the entire dataset for a static scale reference
+    global_vor_range <- range(combined_ranking()$vor, na.rm = TRUE)
     
-    window_data <- bind_rows(ahead_pool, after_pool) %>%
-      mutate(
-        dyn_threshold = pmax(1.0, 0.35 * coalesce(pos_sd_delta, 2.0)),
-        Model_Outlook = case_when(
-          net_delta > dyn_threshold    ~ "🔥 Model Likes More",
-          net_delta < -dyn_threshold   ~ "❄️ Model Likes Less",
-          TRUE                         ~ "⚖️ Matches ESPN"
-        ),
-        "Rank" = overall_adp,
-        "Player" = player,
-        "Pos" = pos,
-        "Team" = team,
-        "Model Proj" = round(weighted_pts, 1),
-        "ESPN Proj" = round(espn_pts, 1),
-        "VOR" = round(vor, 1),
-        "Tier Drop (5)" = round(tier_drop_5, 1),
-        "Tier Accel" = round(tier_acceleration, 1),
-        "SoS" = get_sos_label(sos)
-      ) %>%
-      select(Rank, Player, Pos, Team, VOR, "Tier Drop (5)", "Tier Accel", SoS, "Model Proj", "ESPN Proj", Model_Outlook)
+    if (nrow(window_data) > 0) {
+      window_data <- window_data %>%
+        mutate(
+          dyn_threshold = pmax(1.0, 0.35 * coalesce(pos_sd_delta, 2.0)),
+          Model_Outlook = case_when(
+            net_delta > dyn_threshold    ~ "🔥 Model Likes More",
+            net_delta < -dyn_threshold   ~ "❄️ Model Likes Less",
+            TRUE                         ~ "⚖️ Matches ESPN"
+          ),
+          "Rank" = overall_adp,
+          "Tier" = paste("Tier", tier_group),
+          "Player" = player,
+          "Pos" = pos,
+          "Team" = team,
+          "Model Proj" = round(weighted_pts, 1),
+          "ESPN Proj" = round(espn_pts, 1),
+          "VOR" = round(vor, 1),
+          "SoS" = get_sos_label(sos),
+          "Action" = purrr::map_chr(player, function(p_name) {
+            if (p_name %in% drafted_set) {
+              as.character(actionButton(paste0("undraft_", digest::digest(p_name, algo="crc32")), "Undo", onclick = sprintf("Shiny.setInputValue('undraft_player_btn', '%s', {priority: 'event'});", p_name), class = "btn-danger btn-xs"))
+            } else {
+              as.character(actionButton(paste0("draft_", digest::digest(p_name, algo="crc32")), "Draft", onclick = sprintf("Shiny.setInputValue('draft_player_btn', '%s', {priority: 'event'});", p_name), class = "btn-success btn-xs"))
+            }
+          })
+        ) %>%
+        select(Action, Rank, Tier, Player, Pos, Team, VOR, SoS, "Model Proj", "ESPN Proj", Model_Outlook)
+    } else {
+      window_data <- data.frame(
+        Action = character(0), Rank = numeric(0), Tier = character(0), 
+        Player = character(0), Pos = character(0), Team = character(0), 
+        VOR = numeric(0), SoS = character(0), 
+        "Model Proj" = numeric(0), "ESPN Proj" = numeric(0), Model_Outlook = character(0)
+      )
+    }
     
-    datatable(
+    dt_obj <- datatable(
       window_data,
+      escape = FALSE,
       options = list(pageLength = 25, dom = 't', ordering = FALSE),
       rownames = FALSE
-    ) %>%
-      formatStyle(
-        'VOR',
-        background = styleColorBar(range(window_data$VOR, na.rm = TRUE), '#d4edda'),
-        fontWeight = 'bold'
-      ) %>%
-      formatStyle(
-        'Tier Drop (5)',
-        background = styleColorBar(range(window_data$`Tier Drop (5)`, na.rm = TRUE), '#fff3cd'),
-        fontWeight = 'bold'
-      ) %>%
-      formatStyle(
-        'Tier Accel',
-        background = styleColorBar(range(window_data$`Tier Accel`, na.rm = TRUE), '#e2f0d9'),
-        fontWeight = 'bold'
-      ) %>%
-      formatStyle(
-        'SoS',
-        backgroundColor = styleEqual(
-          c("Weak", "Unfavorable", "Neutral", "Favorable", "Strong"),
-          c('#f8d7da', '#ffe8cc', '#f1f3f5', '#d3f9d8', '#8ce99a')
-        ),
-        fontWeight = 'bold'
-      ) %>%
-      formatStyle(
-        'Model_Outlook',
-        backgroundColor = styleEqual(
-          c("🔥 Model Likes More", "❄️ Model Likes Less", "⚖️ Matches ESPN"),
-          c('#e6f4ea', '#fce8e6', '#f1f3f4')
-        ),
-        fontWeight = 'bold'
-      )
+    )
+    
+    if (nrow(window_data) > 0) {
+      dt_obj <- dt_obj %>%
+        formatStyle(
+          'VOR',
+          background = styleColorBar(global_vor_range, '#d4edda'),
+          fontWeight = 'bold'
+        ) %>%
+        formatStyle(
+          'SoS',
+          backgroundColor = styleEqual(
+            c("Weak", "Unfavorable", "Neutral", "Favorable", "Strong"),
+            c('#f8d7da', '#ffe8cc', '#f1f3f5', '#d3f9d8', '#8ce99a')
+          ),
+          fontWeight = 'bold'
+        ) %>%
+        formatStyle(
+          'Model_Outlook',
+          backgroundColor = styleEqual(
+            c("🔥 Model Likes More", "❄️ Model Likes Less", "⚖️ Matches ESPN"),
+            c('#e6f4ea', '#fce8e6', '#f1f3f4')
+          ),
+          fontWeight = 'bold'
+        )
+    }
+    dt_obj
   })
   
   output$volatility_plot <- renderPlot({

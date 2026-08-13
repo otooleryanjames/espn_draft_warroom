@@ -51,7 +51,7 @@ fp_clean_qb <- fp_raw_qb %>%
     player = str_squish(player) %>% str_remove_all(" (Jr\\.|Sr\\.|II|III|IV)$") %>% str_trim(),
     data_src = "FantasyPros",
     pass_yds        = safe_num(., "yds_5", "pass_yds", "yds"),
-    pass_tds        = safe_num(., "tds_6", "pass_tds", "tds"),
+    pass_tds        = safe_num(., "yds_6", "pass_tds", "tds"),
     pass_int        = safe_num(., "ints", "int", "interceptions"),
     rush_yds        = safe_num(., "yds_9", "rush_yds"),
     rush_tds        = safe_num(., "tds_10", "rush_tds"),
@@ -159,7 +159,7 @@ combined_projections_clean <- combined_projections %>%
 # ==========================================
 source_weights <- tibble(
   data_src = c("FantasyPros", "FantasySharks", "sleeper", "FFToday", "CBS"),
-  weight   = c(1.00, 0.85, 0.85, 0.75, 0.65)
+  weight   = c(0.9, 0.85, 0.9, 0.75, 0.62)
 )
 
 stat_cols_weighted <- c("pass_yds", "pass_tds", "pass_int", "rush_yds", "rush_tds", "fumbles_lost", "rec", "rec_yds", "rec_tds")
@@ -179,7 +179,7 @@ weighted_projections <- combined_projections_clean %>%
   mutate(across(all_of(stat_cols_weighted), ~ ifelse(is.nan(.x), 0, .x)))
 
 # ==========================================
-# 6. LEAGUE SCORING & POSITIONAL VOR
+# 6. LEAGUE SCORING & POSITIONAL VOR / CLIFF METRICS
 # ==========================================
 league_rules <- list(
   pass_yds = 0.04, pass_tds = 4.00, pass_int = -2.00, 
@@ -276,7 +276,6 @@ blended_sos_table <- yahoo_data %>%
   ) %>%
   select(team, qb_blended, rb_blended, wr_blended, te_blended)
 
-# Pivot SoS long so it can easily join back to players by team and pos
 sos_long <- blended_sos_table %>%
   pivot_longer(
     cols = c(qb_blended, rb_blended, wr_blended, te_blended),
@@ -300,6 +299,11 @@ weighted_projections <- weighted_projections %>%
   mutate(
     baseline_pts = coalesce(baseline_pts, 0),
     vor = weighted_pts - baseline_pts,
+    
+    # --- NEW: Positional Cliff / Tier Drop Metrics ---
+    tier_drop_1 = vor - lead(vor, 1),
+    tier_drop_5 = vor - lead(vor, 5),
+    
     sos = coalesce(sos, 3.0),
     model_adp = rank(-weighted_pts, ties.method = "min")
   ) %>%
@@ -314,4 +318,4 @@ save(
   file = "app_data.RData"
 )
 
-print("Data processing & SoS integration completed successfully!")
+print("Data processing, SoS integration, and Tier Drop calculations completed successfully!")

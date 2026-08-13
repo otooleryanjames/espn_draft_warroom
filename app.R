@@ -14,7 +14,7 @@ get_sos_label <- function(sos_val) {
     sos_val >= 3.5 ~ "Favorable",
     sos_val >= 2.5 ~ "Neutral",
     sos_val >= 1.5 ~ "Unfavorable",
-    TRUE           ~ "Weak"
+    TRUE            ~ "Weak"
   )
 }
 
@@ -58,10 +58,8 @@ ui <- fluidPage(
                    selected = "PPR"),
       hr(),
       
-      # Toggle to show/hide VOR baseline settings side panel
       checkboxInput("show_vor_baselines", "Customize VOR Baselines", value = FALSE),
       
-      # Conditional panel that collapses/hides based on the checkbox toggle
       conditionalPanel(
         condition = "input.show_vor_baselines == true",
         wellPanel(
@@ -140,7 +138,7 @@ server <- function(input, output, session) {
     rep_df <- rep_ranks_reactive()
     
     weighted_projections %>%
-      select(-any_of(c("weighted_pts", "vor", "model_adp", "pos_rank"))) %>%
+      select(-any_of(c("weighted_pts", "vor", "model_adp", "pos_rank", "tier_drop_1", "tier_drop_5", "tier_acceleration", "tier_group"))) %>%
       calc_league_pts(league_rules()) %>%
       rename(weighted_pts = total_pts) %>%
       filter(pos %in% c("QB", "RB", "WR", "TE")) %>%
@@ -156,10 +154,23 @@ server <- function(input, output, session) {
           weighted_pts[pos_rank == first(rep_rank)][1],
           tail(weighted_pts, 1)
         ),
-        vor = weighted_pts - coalesce(baseline_pts, 0)
+        vor = weighted_pts - coalesce(baseline_pts, 0),
+        
+        # Drops & Acceleration
+        tier_drop_1 = vor - lead(vor, 1),
+        tier_drop_5 = vor - lead(vor, 5),
+        tier_acceleration = tier_drop_5 - tier_drop_1,
+        
+        # Span-based tiering 
+        max_pos_vor = max(vor, na.rm = TRUE),
+        min_pos_vor = min(vor, na.rm = TRUE),
+        vor_span = pmax(5.0, max_pos_vor - min_pos_vor),
+        
+        tier_step = vor_span / 9.0,
+        tier_group = ceiling((max_pos_vor - vor + 0.01) / tier_step)
       ) %>%
       ungroup() %>%
-      select(-rep_rank, -baseline_pts) %>%
+      select(-rep_rank, -baseline_pts, -max_pos_vor, -min_pos_vor, -vor_span, -tier_step) %>%
       mutate(model_adp = rank(-weighted_pts, ties.method = "min"))
   })
   
@@ -208,12 +219,17 @@ server <- function(input, output, session) {
   draft_board_master <- reactive({
     filtered_ranking() %>%
       mutate(
-        pts_diff = round(weighted_pts - espn_pts, 1),
-        pct_diff = round(((weighted_pts - espn_pts) / espn_pts) * 100, 1),
-        SoS = get_sos_label(sos)
+        SoS = get_sos_label(sos),
+        Tier = paste("Tier", tier_group)
       ) %>%
-      arrange(model_adp) %>%
-      select(model_adp, player, pos, team, weighted_pts, vor, SoS, espn_pts, pts_diff, sources_count)
+      # CHANGE HERE: Sort by tier and value instead of locking it strictly to one position at a time
+      arrange(tier_group, desc(vor)) %>%
+      select(Tier, player, pos, team, weighted_pts, vor, SoS, espn_pts) %>%
+      mutate(
+        weighted_pts = round(weighted_pts),
+        vor = round(vor),
+        espn_pts = round(espn_pts)
+      )
   })
   
   observe({
@@ -236,9 +252,9 @@ server <- function(input, output, session) {
       mutate(
         dyn_threshold = pmax(1.0, 0.35 * coalesce(pos_sd_delta, 2.0)),
         Model_Outlook = case_when(
-          net_delta > dyn_threshold   ~ "🔥 Model Likes More",
-          net_delta < -dyn_threshold  ~ "❄️ Model Likes Less",
-          TRUE                        ~ "⚖️ Matches ESPN"
+          net_delta > dyn_threshold    ~ "🔥 Model Likes More",
+          net_delta < -dyn_threshold   ~ "❄️ Model Likes Less",
+          TRUE                         ~ "⚖️ Matches ESPN"
         ),
         "Rank" = overall_adp,
         "Player" = player,
@@ -247,10 +263,11 @@ server <- function(input, output, session) {
         "Model Proj" = round(weighted_pts, 1),
         "ESPN Proj" = round(espn_pts, 1),
         "VOR" = round(vor, 1),
-        "SoS" = get_sos_label(sos),
-        "Delta" = round(weighted_pts - espn_pts, 1)
+        "Tier Drop (5)" = round(tier_drop_5, 1),
+        "Tier Accel" = round(tier_acceleration, 1),
+        "SoS" = get_sos_label(sos)
       ) %>%
-      select(Rank, Player, Pos, Team, VOR, SoS, "Model Proj", "ESPN Proj", Delta, Model_Outlook)
+      select(Rank, Player, Pos, Team, VOR, "Tier Drop (5)", "Tier Accel", SoS, "Model Proj", "ESPN Proj", Model_Outlook)
     
     datatable(
       window_data,
@@ -260,6 +277,16 @@ server <- function(input, output, session) {
       formatStyle(
         'VOR',
         background = styleColorBar(range(window_data$VOR, na.rm = TRUE), '#d4edda'),
+        fontWeight = 'bold'
+      ) %>%
+      formatStyle(
+        'Tier Drop (5)',
+        background = styleColorBar(range(window_data$`Tier Drop (5)`, na.rm = TRUE), '#fff3cd'),
+        fontWeight = 'bold'
+      ) %>%
+      formatStyle(
+        'Tier Accel',
+        background = styleColorBar(range(window_data$`Tier Accel`, na.rm = TRUE), '#e2f0d9'),
         fontWeight = 'bold'
       ) %>%
       formatStyle(

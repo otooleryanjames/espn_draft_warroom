@@ -10,6 +10,20 @@ library(janitor)
 library(ggplot2)
 
 # ==========================================
+# 0. OFFICIAL 2026 NFL BYE WEEKS LOOKUP
+# ==========================================
+bye_2026 <- c(
+  "ARI" = 14, "ATL" = 11, "BAL" = 13, "BUF" = 7,
+  "CAR" = 5,  "CHI" = 10, "CIN" = 6,  "CLE" = 11,
+  "DAL" = 14, "DEN" = 10, "DET" = 6,  "GB"  = 11,
+  "HOU" = 8,  "IND" = 13, "JAX" = 7,  "KC"  = 5,
+  "LAC" = 7,  "LAR" = 11, "LV"  = 13, "MIA" = 6,
+  "MIN" = 6,  "NE"  = 11, "NO"  = 8,  "NYG" = 8,
+  "NYJ" = 13, "PHI" = 10, "PIT" = 9,  "SF"  = 8,
+  "SEA" = 11, "TB"  = 10, "TEN" = 9,  "WAS" = 7
+)
+
+# ==========================================
 # 1. READ & CLEAN FANTASYPROS CSV EXPORTS
 # ==========================================
 fp_raw <- read_csv("fp_flex_proj.csv", show_col_types = FALSE) %>% clean_names()
@@ -151,7 +165,8 @@ combined_projections_clean <- combined_projections %>%
     player = player %>% 
       str_remove_all(" (Jr\\.|Sr\\.|II|III|IV)$") %>% 
       str_remove_all("\\.") %>% 
-      str_squish()
+      str_squish(),
+    bye = unname(bye_2026[team])
   )
 
 # ==========================================
@@ -168,7 +183,7 @@ weighted_projections <- combined_projections_clean %>%
   filter(data_src != "ESPN") %>% 
   left_join(source_weights, by = "data_src") %>%
   mutate(weight = coalesce(weight, 1.0)) %>%
-  group_by(player, pos, team) %>%
+  group_by(player, pos, team, bye) %>%
   mutate(norm_weight = weight / sum(weight, na.rm = TRUE)) %>%
   summarise(
     sources_count = n(),
@@ -300,7 +315,7 @@ weighted_projections <- weighted_projections %>%
     baseline_pts = coalesce(baseline_pts, 0),
     vor = weighted_pts - baseline_pts,
     
-    # --- NEW: Positional Cliff / Tier Drop Metrics ---
+    # Positional Cliff / Tier Drop Metrics
     tier_drop_1 = vor - lead(vor, 1),
     tier_drop_5 = vor - lead(vor, 5),
     
@@ -318,4 +333,4 @@ save(
   file = "app_data.RData"
 )
 
-print("Data processing, SoS integration, and Tier Drop calculations completed successfully!")
+print("Data processing, bye week integration, SoS, and Tier Drop calculations completed successfully!")

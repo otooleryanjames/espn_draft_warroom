@@ -41,6 +41,14 @@ calc_league_pts <- function(df, rules) {
     select(-ends_with("_c"))
 }
 
+# Clean apostrophes and quotes from player names globally to avoid HTML/JS selector breaks
+if ("weighted_projections" %in% ls()) {
+  weighted_projections$player <- gsub("['`’]", "", weighted_projections$player)
+}
+if ("combined_projections_clean" %in% ls()) {
+  combined_projections_clean$player <- gsub("['`’]", "", combined_projections_clean$player)
+}
+
 # Extract unique sorted teams for the filter input
 all_teams <- sort(unique(na.omit(weighted_projections$team)))
 
@@ -244,17 +252,19 @@ server <- function(input, output, session) {
                          server = TRUE)
   })
   
-  # Handle Draft / Undo Button clicks from the focus table
-  observeEvent(input$draft_player_btn, {
-    p_name <- input$draft_player_btn
+  # Standard shinyclick / DT proxy event handling using standard button IDs
+  observeEvent(input$draft_player, {
+    req(input$draft_player)
+    p_name <- input$draft_player
     current_drafted <- my_drafted_players()
     if (!(p_name %in% current_drafted)) {
       my_drafted_players(c(current_drafted, p_name))
     }
   })
   
-  observeEvent(input$undraft_player_btn, {
-    p_name <- input$undraft_player_btn
+  observeEvent(input$undraft_player, {
+    req(input$undraft_player)
+    p_name <- input$undraft_player
     current_drafted <- my_drafted_players()
     my_drafted_players(setdiff(current_drafted, p_name))
   })
@@ -262,7 +272,6 @@ server <- function(input, output, session) {
   output$my_roster_summary <- renderUI({
     drafted <- my_drafted_players()
     
-    # Define standard starting slots shell: 1 QB, 2 RB, 2 WR, 1 TE, 1 FLEX (RB/WR/TE), 5 BENCH
     shell_slots <- c("QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "BN", "BN", "BN", "BN", "BN")
     
     if (length(drafted) == 0) {
@@ -272,14 +281,9 @@ server <- function(input, output, session) {
         filter(player %in% drafted) %>%
         arrange(desc(weighted_pts))
       
-      # Greedy assignment into standard lineup slots
-      filled_slots <- character(length(shell_slots))
-      assigned_players <- rep(NA_character_, length(shell_slots))
       assigned_details <- vector("list", length(shell_slots))
-      
       unassigned_indices <- seq_len(nrow(roster_df))
       
-      # 1. Fill exact QB slots
       qb_indices <- which(shell_slots == "QB")
       for (s in qb_indices) {
         match_idx <- which(unassigned_indices %in% which(roster_df$pos[unassigned_indices] == "QB"))
@@ -290,7 +294,6 @@ server <- function(input, output, session) {
         }
       }
       
-      # 2. Fill exact RB slots
       rb_indices <- which(shell_slots == "RB")
       for (s in rb_indices) {
         match_idx <- which(unassigned_indices %in% which(roster_df$pos[unassigned_indices] == "RB"))
@@ -301,7 +304,6 @@ server <- function(input, output, session) {
         }
       }
       
-      # 3. Fill exact WR slots
       wr_indices <- which(shell_slots == "WR")
       for (s in wr_indices) {
         match_idx <- which(unassigned_indices %in% which(roster_df$pos[unassigned_indices] == "WR"))
@@ -312,7 +314,6 @@ server <- function(input, output, session) {
         }
       }
       
-      # 4. Fill exact TE slots
       te_indices <- which(shell_slots == "TE")
       for (s in te_indices) {
         match_idx <- which(unassigned_indices %in% which(roster_df$pos[unassigned_indices] == "TE"))
@@ -323,7 +324,6 @@ server <- function(input, output, session) {
         }
       }
       
-      # 5. Fill FLEX slots (RB/WR/TE)
       flex_indices <- which(shell_slots == "FLEX")
       for (s in flex_indices) {
         match_idx <- which(unassigned_indices %in% which(roster_df$pos[unassigned_indices] %in% c("RB", "WR", "TE")))
@@ -334,7 +334,6 @@ server <- function(input, output, session) {
         }
       }
       
-      # 6. Fill remaining into Bench (BN) slots
       bn_indices <- which(shell_slots == "BN")
       for (s in bn_indices) {
         if (length(unassigned_indices) > 0) {
@@ -344,7 +343,6 @@ server <- function(input, output, session) {
         }
       }
       
-      # If more players drafted than total shell slots, append extra bench slots
       if (length(unassigned_indices) > 0) {
         for (p_idx in unassigned_indices) {
           shell_slots <- c(shell_slots, "BN")
@@ -397,8 +395,6 @@ server <- function(input, output, session) {
     }
     
     drafted_set <- my_drafted_players()
-    
-    # Compute global VOR range across the entire dataset for a static scale reference
     global_vor_range <- range(combined_ranking()$vor, na.rm = TRUE)
     
     if (nrow(window_data) > 0) {
@@ -419,11 +415,21 @@ server <- function(input, output, session) {
           "ESPN Proj" = round(espn_pts, 1),
           "VOR" = round(vor, 1),
           "SoS" = get_sos_label(sos),
-          "Action" = purrr::map_chr(player, function(p_name) {
+          "Action" = sapply(player, function(p_name) {
             if (p_name %in% drafted_set) {
-              as.character(actionButton(paste0("undraft_", digest::digest(p_name, algo="crc32")), "Undo", onclick = sprintf("Shiny.setInputValue('undraft_player_btn', '%s', {priority: 'event'});", p_name), class = "btn-danger btn-xs"))
+              as.character(actionButton(
+                inputId = paste0("undraft_", gsub("[^a-zA-Z0-9]", "", p_name)),
+                label = "Undo",
+                class = "btn-danger btn-xs",
+                onclick = sprintf("Shiny.setInputValue('undraft_player', '%s', {priority: 'event'})", p_name)
+              ))
             } else {
-              as.character(actionButton(paste0("draft_", digest::digest(p_name, algo="crc32")), "Draft", onclick = sprintf("Shiny.setInputValue('draft_player_btn', '%s', {priority: 'event'});", p_name), class = "btn-success btn-xs"))
+              as.character(actionButton(
+                inputId = paste0("draft_", gsub("[^a-zA-Z0-9]", "", p_name)),
+                label = "Draft",
+                class = "btn-success btn-xs",
+                onclick = sprintf("Shiny.setInputValue('draft_player', '%s', {priority: 'event'})", p_name)
+              ))
             }
           })
         ) %>%

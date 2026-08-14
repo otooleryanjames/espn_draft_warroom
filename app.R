@@ -252,7 +252,6 @@ server <- function(input, output, session) {
                          server = TRUE)
   })
   
-  # Standard shinyclick / DT proxy event handling using standard button IDs
   observeEvent(input$draft_player, {
     req(input$draft_player)
     p_name <- input$draft_player
@@ -359,7 +358,7 @@ server <- function(input, output, session) {
         if (is.null(x)) "—" else x$player
       })
       assigned_df$pos_team <- sapply(assigned_details, function(x) {
-        if (is.null(x)) "" else paste0(" (", x$pos, " - ", x$team, ")")
+        if (is.null(x)) "" else paste0(" (", x$pos, " - ", x$team, " | Bye ", x$bye, ")")
       })
     }
     
@@ -395,6 +394,12 @@ server <- function(input, output, session) {
     }
     
     drafted_set <- my_drafted_players()
+    
+    # Extract current roster players, teams, and bye weeks to cross-reference against comparison targets
+    roster_df_current <- combined_ranking() %>% filter(player %in% drafted_set)
+    roster_teams <- unique(roster_df_current$team)
+    roster_byes  <- unique(roster_df_current$bye)
+    
     global_vor_range <- range(combined_ranking()$vor, na.rm = TRUE)
     
     if (nrow(window_data) > 0) {
@@ -406,11 +411,15 @@ server <- function(input, output, session) {
             net_delta < -dyn_threshold   ~ "❄️ Model Likes Less",
             TRUE                         ~ "⚖️ Matches ESPN"
           ),
+          # Flag if an undrafted target shares a team or bye week with someone already on your roster
+          Team_Stack = if_else(!(player %in% drafted_set) & team %in% roster_teams, "⚠️ Team Match", ""),
+          Bye_Conflict = if_else(!(player %in% drafted_set) & bye %in% roster_byes, paste0("📅 Bye ", bye, " Match"), ""),
           "Rank" = overall_adp,
           "Tier" = paste("Tier", tier_group),
           "Player" = player,
           "Pos" = pos,
           "Team" = team,
+          "Bye" = bye,
           "Model Proj" = round(weighted_pts, 1),
           "ESPN Proj" = round(espn_pts, 1),
           "VOR" = round(vor, 1),
@@ -433,11 +442,12 @@ server <- function(input, output, session) {
             }
           })
         ) %>%
-        select(Action, Rank, Tier, Player, Pos, Team, VOR, SoS, "Model Proj", "ESPN Proj", Model_Outlook)
+        select(Action, Rank, Tier, Player, Pos, Team, Bye, Team_Stack, Bye_Conflict, VOR, SoS, "Model Proj", "ESPN Proj", Model_Outlook)
     } else {
       window_data <- data.frame(
         Action = character(0), Rank = numeric(0), Tier = character(0), 
         Player = character(0), Pos = character(0), Team = character(0), 
+        Bye = numeric(0), Team_Stack = character(0), Bye_Conflict = character(0),
         VOR = numeric(0), SoS = character(0), 
         "Model Proj" = numeric(0), "ESPN Proj" = numeric(0), Model_Outlook = character(0)
       )
